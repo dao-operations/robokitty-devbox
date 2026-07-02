@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "== robokitty status =="
+hostnamectl || true
+
+echo "\n== users =="
+getent passwd {{ robokitty_bridge_user }} {{ robokitty_runner_user }} {{ robokitty_git_user }} || true
+
+echo "\n== tools =="
+for cmd in codex takopi git gh podman jq python3; do
+  if command -v "$cmd" >/dev/null 2>&1; then
+    echo "$cmd: $($cmd --version 2>&1 | head -n1)"
+  else
+    echo "$cmd: missing"
+  fi
+done
+
+echo "\n== service =="
+systemctl --no-pager --lines=0 status takopi || true
+
+echo "\n== repos =="
+if [ -r {{ robokitty_config_dir }}/repos.json ]; then
+  jq '.repos | keys' {{ robokitty_config_dir }}/repos.json
+fi
+
+echo "\n== secret file permissions, no contents =="
+for f in \
+  /home/{{ robokitty_bridge_user }}/.takopi/takopi.toml \
+  /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem \
+  /home/{{ robokitty_runner_user }}/.codex/auth.json; do
+  [ -e "$f" ] && stat -c '%a %U %G %n' "$f" || echo "missing: $f"
+done

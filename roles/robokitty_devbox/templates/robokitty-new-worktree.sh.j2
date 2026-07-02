@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() { echo "usage: robokitty-new-worktree <repo-alias> agent/<slug> [base-branch]" >&2; exit 2; }
+[ "$#" -ge 2 ] || usage
+alias="$1"; branch="$2"; base="${3:-}"
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || { echo "branch must match agent/[A-Za-z0-9._-]+" >&2; exit 2; }
+config="{{ robokitty_config_dir }}/repos.json"
+repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
+default_base="$(jq -r --arg a "$alias" '.repos[$a].default_branch // "main"' "$config")"
+[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
+[ -n "$base" ] || base="$default_base"
+slug="${branch#agent/}"
+worktree_path="$(dirname "$repo_path")/$(basename "$repo_path").agent.$slug"
+
+cd "$repo_path"
+git fetch origin "$base"
+if [ -d "$worktree_path" ]; then
+  echo "$worktree_path"
+  exit 0
+fi
+git worktree add "$worktree_path" -b "$branch" "origin/$base"
+echo "$worktree_path"

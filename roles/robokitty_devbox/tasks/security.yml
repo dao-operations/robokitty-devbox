@@ -1,0 +1,48 @@
+---
+- name: Install sudoers policy for wrappers
+  ansible.builtin.template:
+    src: sudoers-robokitty-devbox.j2
+    dest: /etc/sudoers.d/robokitty-devbox
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+
+- name: Configure UFW default incoming deny
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+  when: robokitty_configure_ufw | bool
+
+- name: Configure UFW default outgoing allow
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+  when: robokitty_configure_ufw | bool
+
+- name: Allow SSH CIDRs
+  community.general.ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+    src: "{{ item }}"
+  loop: "{{ robokitty_allowed_ssh_cidrs }}"
+  when: robokitty_configure_ufw | bool
+
+- name: Block common cloud metadata endpoint
+  community.general.ufw:
+    rule: deny
+    direction: out
+    to_ip: 169.254.169.254
+  when: robokitty_configure_ufw | bool
+
+- name: Enable UFW
+  community.general.ufw:
+    state: enabled
+  when: robokitty_configure_ufw | bool
+
+- name: Enable fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    enabled: true
+    state: started

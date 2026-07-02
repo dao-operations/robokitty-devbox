@@ -1,0 +1,40 @@
+---
+robokitty_hostname: robokitty-devbox
+
+robokitty_takopi_chat_id: null
+robokitty_takopi_allowed_user_ids:
+  - 123456789
+
+robokitty_github_app_id: ""
+robokitty_github_app_installation_id: ""
+# Preferred: keep private key outside git and copy it from your local machine during playbook run.
+robokitty_github_app_private_key_src: ""
+
+robokitty_repos:
+  - alias: dao
+    owner: example-org
+    repo: example-frontend
+    default_branch: main
+    clone_url: https://github.com/example-org/example-frontend.git
+    path: /srv/robokitty-devbox/work/example-frontend
+    allowed_base_branches:
+      - main
+    allow_push: true
+    allow_pr_create: true
+    container_image: docker.io/library/node:22-bookworm
+    pr_labels:
+      - agent
+      - needs-review
+
+robokitty_infra_repo:
+  alias: robokitty-infra
+  owner: example-org
+  repo: robokitty-devbox
+  default_branch: main
+  clone_url: https://github.com/example-org/robokitty-devbox.git
+  path: /srv/robokitty-devbox/infra
+  allowed_base_branches:
+    - main
+  allow_push: true
+  allow_pr_create: true
+  container_image: docker.io/library/ubuntu:24.04

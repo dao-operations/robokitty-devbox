@@ -1,0 +1,49 @@
+---
+- name: Install uv and Takopi as bridge user
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if ! command -v uv >/dev/null 2>&1; then
+      curl -LsSf https://astral.sh/uv/install.sh | sh
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
+    uv python install 3.14
+    uv tool install -U takopi
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ robokitty_bridge_user }}"
+  changed_when: false
+
+- name: Render Takopi config
+  ansible.builtin.template:
+    src: takopi.toml.j2
+    dest: "/home/{{ robokitty_bridge_user }}/.takopi/takopi.toml"
+    owner: "{{ robokitty_bridge_user }}"
+    group: "{{ robokitty_bridge_user }}"
+    mode: "0600"
+  notify: Restart takopi
+
+- name: Install Codex wrapper
+  ansible.builtin.template:
+    src: codex-wrapper.sh.j2
+    dest: "{{ robokitty_wrappers_dir }}/codex"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install Takopi systemd unit
+  ansible.builtin.template:
+    src: takopi.service.j2
+    dest: /etc/systemd/system/takopi.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart takopi
+
+- name: Enable/start Takopi when configured
+  ansible.builtin.service:
+    name: takopi
+    enabled: "{{ robokitty_enable_takopi_service | bool }}"
+    state: "{{ 'started' if (robokitty_start_takopi_service | bool and robokitty_takopi_bot_token | length > 0 and robokitty_takopi_chat_id is not none and robokitty_takopi_allowed_user_ids | length > 0) else 'stopped' }}"

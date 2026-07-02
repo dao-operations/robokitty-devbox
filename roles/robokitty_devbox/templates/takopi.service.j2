@@ -1,0 +1,25 @@
+[Unit]
+Description=Takopi Telegram bridge for Robokitty Codex devbox
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ robokitty_bridge_user }}
+Group={{ robokitty_bridge_user }}
+WorkingDirectory={{ robokitty_workdir }}
+Environment=HOME=/home/{{ robokitty_bridge_user }}
+Environment=PATH={{ robokitty_wrappers_dir }}:/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/{{ robokitty_bridge_user }}/.local/bin/takopi
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=/home/{{ robokitty_bridge_user }} {{ robokitty_workdir }}
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

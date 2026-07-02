@@ -1,0 +1,60 @@
+---
+- name: Render repo allowlist config
+  ansible.builtin.template:
+    src: repo-config.json.j2
+    dest: "{{ robokitty_config_dir }}/repos.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render GitHub App config
+  ansible.builtin.copy:
+    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.toml"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0600"
+    content: |
+      app_id = "{{ robokitty_github_app_id }}"
+      default_installation_id = "{{ robokitty_github_app_installation_id }}"
+      private_key_path = "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+
+- name: Copy GitHub App private key from local path
+  ansible.builtin.copy:
+    src: "{{ robokitty_github_app_private_key_src }}"
+    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0600"
+  when: robokitty_github_app_private_key_src | length > 0
+
+- name: Write GitHub App private key from vault variable
+  ansible.builtin.copy:
+    content: "{{ robokitty_github_app_private_key_pem }}"
+    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0600"
+  when: robokitty_github_app_private_key_pem | length > 0
+
+- name: Install GitHub broker scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { src: githubctl.py.j2, dest: "{{ robokitty_libdir }}/githubctl.py", mode: "0755" }
+    - { src: github-app-token.py.j2, dest: "{{ robokitty_libdir }}/github-app-token.py", mode: "0755" }
+    - { src: github-git-askpass.sh.j2, dest: "{{ robokitty_libdir }}/github-git-askpass.sh", mode: "0755" }
+
+- name: Install githubctl wrapper
+  ansible.builtin.copy:
+    dest: "{{ robokitty_bindir }}/githubctl"
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec sudo -H -n -u {{ robokitty_git_user }} -- {{ robokitty_libdir }}/githubctl.py "$@"

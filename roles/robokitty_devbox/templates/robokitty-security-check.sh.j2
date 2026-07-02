@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+fail(){ echo "FAIL: $*" >&2; exit 1; }
+ok(){ echo "OK: $*"; }
+
+echo "[1] runner cannot read Takopi config"
+if sudo -n -u {{ robokitty_runner_user }} test -r /home/{{ robokitty_bridge_user }}/.takopi/takopi.toml; then
+  fail "runner can read Takopi config"
+else
+  ok "runner cannot read Takopi config"
+fi
+
+echo "[2] runner cannot read GitHub App private key"
+if sudo -n -u {{ robokitty_runner_user }} test -r /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem; then
+  fail "runner can read GitHub App private key"
+else
+  ok "runner cannot read GitHub App private key"
+fi
+
+echo "[3] runner has no GitHub token in normal shell"
+if sudo -n -u {{ robokitty_runner_user }} env | grep -E '^(GH_TOKEN|GITHUB_TOKEN)='; then
+  fail "runner shell has GitHub token"
+else
+  ok "runner shell has no GitHub token"
+fi
+
+echo "[4] runner has no Telegram token in normal shell"
+if sudo -n -u {{ robokitty_runner_user }} env | grep -Ei '(TELEGRAM|BOT_TOKEN)'; then
+  fail "runner shell has Telegram token-like env"
+else
+  ok "runner shell has no Telegram token env"
+fi
+
+echo "[5] secret file modes"
+for f in \
+  /home/{{ robokitty_bridge_user }}/.takopi/takopi.toml \
+  /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem \
+  /home/{{ robokitty_runner_user }}/.codex/auth.json; do
+  [ -e "$f" ] && stat -c '%a %U %G %n' "$f" || true
+done
+
+echo "Security check complete"

@@ -1,0 +1,25 @@
+# Ansible
+*.retry
+.vault-pass
+vault*.yml
+!vault.yml.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local inventories
+inventories/local/
+
+# Secrets / keys
+*.pem
+*.key
+*.pub.local
+.env
+.env.*
+
+# Editor
+.DS_Store
+.idea/
+.vscode/

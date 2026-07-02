@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+live="{{ robokitty_live_dir }}/codex"
+infra="{{ robokitty_infra_dir }}/codex"
+if [ ! -d "$infra" ]; then
+  echo "infra codex dir not found: $infra" >&2
+  exit 2
+fi
+if [ ! -d "$live" ]; then
+  echo "live codex dir not found: $live" >&2
+  exit 2
+fi
+exec diff -ruN "$infra" "$live"

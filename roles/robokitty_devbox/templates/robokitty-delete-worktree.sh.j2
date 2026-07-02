@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() { echo "usage: robokitty-delete-worktree <repo-alias> agent/<slug> [--delete-local-branch]" >&2; exit 2; }
+[ "$#" -ge 2 ] || usage
+alias="$1"; branch="$2"; delete_branch="${3:-}"
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || { echo "branch must match agent/[A-Za-z0-9._-]+" >&2; exit 2; }
+config="{{ robokitty_config_dir }}/repos.json"
+repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
+[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
+slug="${branch#agent/}"
+worktree_path="$(dirname "$repo_path")/$(basename "$repo_path").agent.$slug"
+
+cd "$repo_path"
+if [ -d "$worktree_path" ]; then
+  git worktree remove "$worktree_path"
+fi
+if [ "$delete_branch" = "--delete-local-branch" ]; then
+  git branch -D "$branch" || true
+fi

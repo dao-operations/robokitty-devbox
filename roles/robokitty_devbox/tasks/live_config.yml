@@ -1,0 +1,48 @@
+---
+- name: Create live codex directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_work_group }}"
+    mode: "2775"
+  loop:
+    - "{{ robokitty_live_dir }}/codex"
+    - "{{ robokitty_live_dir }}/codex/skills"
+
+- name: Seed live AGENTS.md if missing
+  ansible.builtin.template:
+    src: global-AGENTS.md.j2
+    dest: "{{ robokitty_live_dir }}/codex/AGENTS.md"
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_work_group }}"
+    mode: "0664"
+    force: false
+
+- name: Symlink runner AGENTS.md to live copy
+  ansible.builtin.file:
+    src: "{{ robokitty_live_dir }}/codex/AGENTS.md"
+    dest: "/home/{{ robokitty_runner_user }}/.codex/AGENTS.md"
+    state: link
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+
+- name: Symlink runner skills to live skills
+  ansible.builtin.file:
+    src: "{{ robokitty_live_dir }}/codex/skills"
+    dest: "/home/{{ robokitty_runner_user }}/.codex/skills"
+    state: link
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    force: true
+
+- name: Install drift helper scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: robokitty-drift-report.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-drift-report" }
+    - { src: robokitty-sync-live-to-infra.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-sync-live-to-infra" }

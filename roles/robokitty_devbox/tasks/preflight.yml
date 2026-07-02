@@ -1,0 +1,27 @@
+---
+- name: Assert Ubuntu target
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] is version('24.04', '>=')
+      - ansible_facts['distribution_version'] is version('25.00', '<')
+    fail_msg: "robokitty-devbox currently targets Ubuntu 24.04 LTS only."
+
+- name: Validate repo paths are under robokitty root
+  ansible.builtin.assert:
+    that:
+      - item.path is search('^' ~ robokitty_root ~ '/')
+    fail_msg: "Repo {{ item.alias }} path must be under {{ robokitty_root }}"
+  loop: "{{ robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) }}"
+  loop_control:
+    label: "{{ item.alias | default('unknown') }}"
+
+- name: Warn if Telegram config is incomplete
+  ansible.builtin.debug:
+    msg: "Takopi will be installed but not started until bot token, chat_id and allowed_user_ids are configured."
+  when: robokitty_takopi_bot_token | length == 0 or robokitty_takopi_chat_id is none or robokitty_takopi_allowed_user_ids | length == 0
+
+- name: Warn if GitHub App config is incomplete
+  ansible.builtin.debug:
+    msg: "githubctl will be installed but GitHub submission will fail until GitHub App id, installation id and private key are configured."
+  when: robokitty_github_app_id | length == 0 or robokitty_github_app_installation_id | length == 0

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+live="{{ robokitty_live_dir }}/codex/"
+infra="{{ robokitty_infra_dir }}/codex/"
+[ -d "$live" ] || { echo "missing live dir: $live" >&2; exit 2; }
+[ -d "$infra" ] || { echo "missing infra dir: $infra" >&2; exit 2; }
+rsync -a --delete --exclude='*.secret' --exclude='*.pem' --exclude='.env*' "$live" "$infra"
+echo "Synced live codex guidance to infra repo. Review git diff under {{ robokitty_infra_dir }}."

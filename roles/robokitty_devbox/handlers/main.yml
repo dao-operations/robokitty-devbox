@@ -1,0 +1,10 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart takopi
+  ansible.builtin.service:
+    name: takopi
+    state: restarted
+  when: robokitty_start_takopi_service | bool

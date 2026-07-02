@@ -1,0 +1,34 @@
+---
+- name: Clone configured repositories as runner user
+  ansible.builtin.git:
+    repo: "{{ item.clone_url }}"
+    dest: "{{ item.path }}"
+    version: "{{ item.default_branch | default('main') }}"
+    update: true
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+  loop: "{{ robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) }}"
+  loop_control:
+    label: "{{ item.alias }}"
+
+- name: Configure Git identity for runner user
+  ansible.builtin.shell: |
+    git config --global user.name {{ robokitty_git_user_name | quote }}
+    git config --global user.email {{ robokitty_git_user_email | quote }}
+    git config --global init.defaultBranch main
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+  changed_when: false
+
+- name: Install worktree helper scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: robokitty-new-worktree.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-new-worktree" }
+    - { src: robokitty-delete-worktree.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-delete-worktree" }

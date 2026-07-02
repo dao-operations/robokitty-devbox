@@ -1,0 +1,16 @@
+---
+- name: Ensure rootless Podman storage dir exists
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_runner_user }}/.local/share/containers"
+    state: directory
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    mode: "0700"
+
+- name: Install devbox-run wrapper
+  ansible.builtin.template:
+    src: devbox-run.sh.j2
+    dest: "{{ robokitty_bindir }}/devbox-run"
+    owner: root
+    group: root
+    mode: "0755"

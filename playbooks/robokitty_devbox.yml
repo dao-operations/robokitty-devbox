@@ -1,0 +1,6 @@
+---
+- name: Configure Robokitty devbox
+  hosts: robokitty_devboxes
+  become: true
+  roles:
+    - role: robokitty_devbox

@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""Restricted GitHub broker for Robokitty.
+
+This is intentionally small. It is not a `gh` passthrough.
+Runs as agent-git via sudo from the Codex runner user.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CONFIG = Path('{{ robokitty_config_dir }}/repos.json')
+TOKEN_HELPER = Path('{{ robokitty_libdir }}/github-app-token.py')
+ASKPASS = Path('{{ robokitty_libdir }}/github-git-askpass.sh')
+BRANCH_RE = re.compile(r'^agent/[A-Za-z0-9._-]+$')
+
+
+def eprint(*args):
+    print(*args, file=sys.stderr)
+
+
+def load_config() -> dict:
+    return json.loads(CONFIG.read_text())
+
+
+def clean_env(token: str | None = None, for_git: bool = False, for_gh: bool = False) -> dict:
+    env = {
+        'PATH': '/usr/local/bin:/usr/bin:/bin',
+        'HOME': '/home/{{ robokitty_git_user }}',
+        'LANG': 'C.UTF-8',
+        'LC_ALL': 'C.UTF-8',
+        'GIT_TERMINAL_PROMPT': '0',
+    }
+    if token and for_gh:
+        env['GH_TOKEN'] = token
+        env['GITHUB_TOKEN'] = token
+    if token and for_git:
+        env['GIT_ASKPASS'] = str(ASKPASS)
+        env['AGENT_GITHUB_TOKEN'] = token
+    return env
+
+
+def run(argv: list[str], *, token: str | None = None, for_git=False, for_gh=False, cwd: Path | None = None, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+    cp = subprocess.run(
+        argv,
+        cwd=str(cwd) if cwd else None,
+        env=clean_env(token, for_git=for_git, for_gh=for_gh),
+        input=input_bytes,
+        capture_output=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        err = cp.stderr.decode(errors='replace')[:2000]
+        out = cp.stdout.decode(errors='replace')[:1000]
+        raise RuntimeError(f"command failed: {argv[0]} rc={cp.returncode}\nstdout={out}\nstderr={err}")
+    return cp
+
+
+def token() -> str:
+    cp = run([str(TOKEN_HELPER)])
+    t = cp.stdout.decode().strip()
+    if not t:
+        raise RuntimeError('empty GitHub token')
+    return t
+
+
+def repo_cfg(cfg: dict, alias: str) -> dict:
+    repos = cfg.get('repos', {})
+    if alias not in repos:
+        raise ValueError(f'unknown repo alias: {alias}')
+    return repos[alias]
+
+
+def validate_branch(branch: str):
+    if not BRANCH_RE.match(branch):
+        raise ValueError('branch must match agent/[A-Za-z0-9._-]+')
+    if branch in {'agent/main', 'agent/master', 'agent/prod', 'agent/production'}:
+        raise ValueError('branch name too close to protected branch')
+
+
+def validate_worktree(path: str, repo: dict) -> Path:
+    p = Path(path).resolve()
+    repo_path = Path(repo['path']).resolve()
+    work_root = repo_path.parent.resolve()
+    if not str(p).startswith(str(work_root) + os.sep):
+        raise ValueError(f'worktree must be under {work_root}')
+    if not (p / '.git').exists():
+        raise ValueError(f'not a git worktree: {p}')
+    return p
+
+
+def json_out(obj: dict):
+    print(json.dumps(obj, indent=2, sort_keys=True))
+
+
+def cmd_status(args) -> int:
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    ok = bool(repo.get('allow_push') and repo.get('allow_pr_create'))
+    json_out({'ok': ok, 'repo': repo['full_name'], 'broker': 'configured', 'allowed_base_branches': repo.get('allowed_base_branches', [])})
+    return 0
+
+
+def current_branch(worktree: Path) -> str:
+    cp = run(['git', '-C', str(worktree), 'branch', '--show-current'])
+    return cp.stdout.decode().strip()
+
+
+def cmd_submit(args) -> int:
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    if not repo.get('allow_push') or not repo.get('allow_pr_create'):
+        raise ValueError('repo does not allow push/pr creation')
+    validate_branch(args.branch)
+    if args.base not in repo.get('allowed_base_branches', []):
+        raise ValueError(f'base branch not allowed: {args.base}')
+    worktree = validate_worktree(args.worktree, repo)
+    body_file = (worktree / args.body_file).resolve() if not os.path.isabs(args.body_file) else Path(args.body_file).resolve()
+    if not str(body_file).startswith(str(worktree) + os.sep):
+        raise ValueError('body-file must be inside the worktree')
+    if body_file.suffix in {'.pem', '.key'} or body_file.name.startswith('.env'):
+        raise ValueError('body-file looks secret-like')
+
+    branch = current_branch(worktree)
+    if branch != args.branch:
+        raise ValueError(f'worktree is on {branch}, expected {args.branch}')
+
+    status = run(['git', '-C', str(worktree), 'status', '--porcelain']).stdout.decode().strip()
+    if status:
+        raise ValueError('worktree has uncommitted changes; commit locally before submit')
+
+    # Fetch origin in the agent-controlled worktree for an accurate merge-base only.
+    run(['git', '-C', str(worktree), 'fetch', 'origin', args.base])
+    diff = run(['git', '-C', str(worktree), '--no-pager', 'diff', '--binary', '--no-ext-diff', '--no-textconv', f'origin/{args.base}...HEAD']).stdout
+    if not diff:
+        raise ValueError('empty diff; nothing to submit')
+
+    gh_token = token()
+    tmp = Path(tempfile.mkdtemp(prefix='robokitty-submit.'))
+    try:
+        clone_url = f"https://github.com/{repo['full_name']}.git"
+        run(['git', 'clone', '--no-tags', '--depth', '1', '--branch', args.base, clone_url, str(tmp / 'repo')], token=gh_token, for_git=True)
+        clean = tmp / 'repo'
+        run(['git', '-C', str(clean), 'checkout', '-b', args.branch])
+        run(['git', '-C', str(clean), 'apply', '--index', '--binary'], input_bytes=diff)
+        run(['git', '-C', str(clean), 'config', 'user.name', '{{ robokitty_git_user_name }}'])
+        run(['git', '-C', str(clean), 'config', 'user.email', '{{ robokitty_git_user_email }}'])
+        run(['git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null', 'commit', '-m', args.title])
+        run(['git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null', 'push', '--no-verify', 'origin', f'HEAD:refs/heads/{args.branch}'], token=gh_token, for_git=True)
+
+        existing = run(['gh', 'pr', 'list', '--repo', repo['full_name'], '--head', args.branch, '--json', 'number,url', '--jq', '.[0] // {}'], token=gh_token, for_gh=True).stdout.decode().strip()
+        existing_obj = json.loads(existing or '{}')
+        if existing_obj.get('number'):
+            json_out({'ok': True, 'repo': repo['full_name'], 'branch': args.branch, 'base': args.base, 'pr_number': existing_obj['number'], 'pr_url': existing_obj.get('url'), 'created': False})
+            return 0
+
+        gh_args = ['gh', 'pr', 'create', '--repo', repo['full_name'], '--head', args.branch, '--base', args.base, '--title', args.title, '--body-file', str(body_file)]
+        if args.draft:
+            gh_args.append('--draft')
+        pr_url = run(gh_args, token=gh_token, for_gh=True).stdout.decode().strip()
+        json_out({'ok': True, 'repo': repo['full_name'], 'branch': args.branch, 'base': args.base, 'pr_url': pr_url, 'created': True, 'draft': bool(args.draft)})
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_pr_view(args) -> int:
+    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
+    cp = run(['gh', 'pr', 'view', str(args.number), '--repo', repo['full_name'], '--json', 'number,title,url,state,headRefName,baseRefName,isDraft,mergeable,reviewDecision'], token=gh_token, for_gh=True)
+    print(cp.stdout.decode())
+    return 0
+
+
+def cmd_pr_checks(args) -> int:
+    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
+    cp = run(['gh', 'pr', 'checks', str(args.number), '--repo', repo['full_name'], '--json', 'name,state,link,description,bucket'], token=gh_token, for_gh=True)
+    print(cp.stdout.decode())
+    return 0
+
+
+def cmd_pr_comment(args) -> int:
+    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
+    body = Path(args.body_file)
+    if body.is_absolute() or '..' in body.parts:
+        raise ValueError('body-file must be relative and safe for comment command')
+    cp = run(['gh', 'pr', 'comment', str(args.number), '--repo', repo['full_name'], '--body-file', str(Path.cwd() / body)], token=gh_token, for_gh=True)
+    json_out({'ok': True, 'repo': repo['full_name'], 'pr_number': args.number})
+    return 0
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog='githubctl')
+    sub = p.add_subparsers(dest='cmd', required=True)
+    s = sub.add_parser('status'); s.add_argument('--repo', required=True); s.add_argument('--format', default='json'); s.set_defaults(func=cmd_status)
+    s = sub.add_parser('submit'); s.add_argument('--repo', required=True); s.add_argument('--worktree', required=True); s.add_argument('--branch', required=True); s.add_argument('--base', required=True); s.add_argument('--title', required=True); s.add_argument('--body-file', required=True); s.add_argument('--draft', action='store_true', default={{ robokitty_github_default_pr_draft | bool | lower }}); s.add_argument('--format', default='json'); s.set_defaults(func=cmd_submit)
+    s = sub.add_parser('pr'); prsub = s.add_subparsers(dest='prcmd', required=True)
+    v = prsub.add_parser('view'); v.add_argument('--repo', required=True); v.add_argument('--number', type=int, required=True); v.add_argument('--format', default='json'); v.set_defaults(func=cmd_pr_view)
+    c = prsub.add_parser('checks'); c.add_argument('--repo', required=True); c.add_argument('--number', type=int, required=True); c.add_argument('--format', default='json'); c.set_defaults(func=cmd_pr_checks)
+    m = prsub.add_parser('comment'); m.add_argument('--repo', required=True); m.add_argument('--number', type=int, required=True); m.add_argument('--body-file', required=True); m.add_argument('--format', default='json'); m.set_defaults(func=cmd_pr_comment)
+    args = p.parse_args(argv)
+    try:
+        return args.func(args)
+    except ValueError as ex:
+        json_out({'ok': False, 'error': str(ex), 'type': 'validation'})
+        return 1
+    except Exception as ex:
+        # Do not include env vars/tokens. Keep error bounded.
+        json_out({'ok': False, 'error': str(ex)[:2000], 'type': 'execution'})
+        return 4
+
+if __name__ == '__main__':
+    raise SystemExit(main())

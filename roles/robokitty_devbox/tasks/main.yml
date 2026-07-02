@@ -1,0 +1,17 @@
+---
+- import_tasks: preflight.yml
+- import_tasks: users.yml
+- import_tasks: base.yml
+- import_tasks: security.yml
+- import_tasks: codex.yml
+  when: robokitty_install_codex | bool
+- import_tasks: takopi.yml
+  when: robokitty_install_takopi | bool
+- import_tasks: github_broker.yml
+  when: robokitty_github_broker_enabled | bool
+- import_tasks: podman.yml
+  when: robokitty_podman_enabled | bool
+- import_tasks: live_config.yml
+  when: robokitty_live_config_enabled | bool
+- import_tasks: repos.yml
+- import_tasks: status.yml

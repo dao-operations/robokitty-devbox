@@ -1,0 +1,117 @@
+---
+robokitty_hostname: robokitty-devbox
+
+robokitty_bridge_user: agent-bridge
+robokitty_runner_user: agent
+robokitty_git_user: agent-git
+robokitty_work_group: agent-work
+
+robokitty_root: /srv/robokitty-devbox
+robokitty_workdir: /srv/robokitty-devbox/work
+robokitty_live_dir: /srv/robokitty-devbox/live
+robokitty_infra_dir: /srv/robokitty-devbox/infra
+robokitty_libdir: /usr/local/lib/robokitty-devbox
+robokitty_wrappers_dir: /usr/local/lib/robokitty-devbox/wrappers
+robokitty_config_dir: /etc/robokitty-devbox
+robokitty_bindir: /usr/local/bin
+
+robokitty_packages:
+  - acl
+  - bash
+  - bubblewrap
+  - build-essential
+  - ca-certificates
+  - curl
+  - direnv
+  - fd-find
+  - fail2ban
+  - git
+  - git-lfs
+  - gh
+  - gnupg
+  - htop
+  - jq
+  - moreutils
+  - openssh-client
+  - openssh-server
+  - pkg-config
+  - podman
+  - python3
+  - python3-cryptography
+  - python3-jwt
+  - python3-pip
+  - python3-requests
+  - ripgrep
+  - rsync
+  - sqlite3
+  - tmux
+  - tree
+  - ufw
+  - unattended-upgrades
+  - unzip
+  - vim
+  - wget
+  - zip
+
+robokitty_install_node: true
+robokitty_node_major: 22
+robokitty_enable_corepack: true
+
+robokitty_install_tailscale: false
+robokitty_tailscale_auth_key: ""
+robokitty_tailscale_extra_args: "--ssh"
+robokitty_tailscale_accept_dns: true
+
+robokitty_configure_ufw: true
+robokitty_lockdown_public_ssh: false
+robokitty_allowed_ssh_cidrs:
+  - "0.0.0.0/0"
+
+robokitty_install_codex: true
+robokitty_codex_enable_network: true
+robokitty_codex_approval_policy: on-request
+robokitty_codex_approvals_reviewer: auto_review
+robokitty_codex_auth_method: chatgpt
+robokitty_codex_credentials_store: file
+
+robokitty_install_takopi: true
+robokitty_takopi_bot_token: ""
+robokitty_takopi_chat_id: null
+robokitty_takopi_allowed_user_ids: []
+robokitty_takopi_default_engine: codex
+robokitty_takopi_session_mode: chat
+robokitty_takopi_show_resume_line: false
+robokitty_takopi_topics_enabled: false
+robokitty_takopi_topics_scope: auto
+robokitty_takopi_files_enabled: false
+
+robokitty_github_broker_enabled: true
+robokitty_github_app_id: ""
+robokitty_github_app_installation_id: ""
+robokitty_github_app_private_key_pem: ""
+robokitty_github_app_private_key_src: ""
+robokitty_github_allowed_branch_prefix: "agent/"
+robokitty_github_default_pr_draft: true
+robokitty_github_allow_merge: false
+robokitty_github_allow_workflow_dispatch: false
+robokitty_github_submit_mode: safe-squash
+
+robokitty_git_user_name: Robokitty Devbox
+robokitty_git_user_email: robokitty-devbox@example.invalid
+
+robokitty_repos: []
+robokitty_infra_repo: null
+
+robokitty_enable_takopi_service: true
+robokitty_start_takopi_service: true
+robokitty_enable_proc_hardening: false
+
+robokitty_podman_enabled: true
+robokitty_podman_default_image: docker.io/library/node:22-bookworm
+robokitty_podman_network: slirp4netns
+robokitty_podman_pull_policy: missing
+
+robokitty_live_config_enabled: true
+robokitty_live_config_allow_agent_edits: true
+robokitty_live_config_managed_paths:
+  - codex

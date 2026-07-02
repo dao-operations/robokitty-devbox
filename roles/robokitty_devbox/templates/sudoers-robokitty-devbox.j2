@@ -1,0 +1,9 @@
+# Managed by robokitty-devbox. Do not edit directly.
+Defaults:{{ robokitty_bridge_user }} !requiretty
+Defaults:{{ robokitty_runner_user }} !requiretty
+
+# Takopi may run exactly the Codex binary as the runner user.
+{{ robokitty_bridge_user }} ALL=({{ robokitty_runner_user }}) NOPASSWD: /usr/local/bin/codex
+
+# Codex runner may call only the GitHub broker as agent-git.
+{{ robokitty_runner_user }} ALL=({{ robokitty_git_user }}) NOPASSWD: {{ robokitty_libdir }}/githubctl.py *

@@ -1,0 +1,43 @@
+# Managed by robokitty-devbox. Do not edit directly unless intentionally testing live config drift.
+cli_auth_credentials_store = "{{ robokitty_codex_credentials_store }}"
+forced_login_method = "{{ robokitty_codex_auth_method }}"
+approval_policy = "{{ robokitty_codex_approval_policy }}"
+approvals_reviewer = "{{ robokitty_codex_approvals_reviewer }}"
+default_permissions = "robokitty-devbox"
+
+[permissions.robokitty-devbox]
+description = "Robokitty devbox: workspace write, public internet, denied secret paths."
+extends = ":workspace"
+
+[permissions.robokitty-devbox.workspace_roots]
+"{{ robokitty_workdir }}" = true
+"{{ robokitty_live_dir }}" = true
+"{{ robokitty_infra_dir }}" = true
+
+[permissions.robokitty-devbox.filesystem]
+":minimal" = "read"
+"{{ robokitty_root }}" = "write"
+"/home/{{ robokitty_bridge_user }}" = "deny"
+"/home/{{ robokitty_git_user }}" = "deny"
+"/root" = "deny"
+"{{ robokitty_config_dir }}" = "deny"
+"~/.codex/auth.json" = "deny"
+"~/.ssh" = "deny"
+"~/.config/gh" = "deny"
+"~/.gnupg" = "deny"
+
+[permissions.robokitty-devbox.filesystem.":workspace_roots"]
+"." = "write"
+"**/.env" = "deny"
+"**/.env.*" = "deny"
+"**/*.pem" = "deny"
+"**/id_*" = "deny"
+"**/.ssh/**" = "deny"
+
+[permissions.robokitty-devbox.network]
+enabled = {{ robokitty_codex_enable_network | bool | lower }}
+
+[permissions.robokitty-devbox.network.domains]
+"*" = "allow"
+"169.254.169.254" = "deny"
+"metadata.google.internal" = "deny"

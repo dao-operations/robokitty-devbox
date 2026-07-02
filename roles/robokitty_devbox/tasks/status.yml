@@ -1,0 +1,11 @@
+---
+- name: Install status and security check scripts
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: robokitty-status.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-status" }
+    - { src: robokitty-security-check.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-security-check" }

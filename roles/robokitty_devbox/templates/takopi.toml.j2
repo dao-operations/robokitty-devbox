@@ -1,0 +1,48 @@
+# Managed by robokitty-devbox. Contains Telegram token. Not readable by Codex runner.
+default_engine = "{{ robokitty_takopi_default_engine }}"
+transport = "telegram"
+
+[transports.telegram]
+bot_token = "{{ robokitty_takopi_bot_token }}"
+chat_id = {{ robokitty_takopi_chat_id | default('0', true) }}
+allowed_user_ids = [{{ robokitty_takopi_allowed_user_ids | join(', ') }}]
+session_mode = "{{ robokitty_takopi_session_mode }}"
+show_resume_line = {{ robokitty_takopi_show_resume_line | bool | lower }}
+voice_transcription = false
+
+[transports.telegram.topics]
+enabled = {{ robokitty_takopi_topics_enabled | bool | lower }}
+scope = "{{ robokitty_takopi_topics_scope }}"
+
+[transports.telegram.files]
+enabled = {{ robokitty_takopi_files_enabled | bool | lower }}
+auto_put = true
+auto_put_mode = "prompt"
+uploads_dir = "incoming"
+allowed_user_ids = [{{ robokitty_takopi_allowed_user_ids | join(', ') }}]
+deny_globs = [
+  ".git/**",
+  ".env",
+  ".env.*",
+  "**/*.pem",
+  "**/.ssh/**",
+  "**/id_*",
+  "**/*_rsa",
+  "**/*_ed25519"
+]
+
+[codex]
+mode = "app_server"
+extra_args = ["-c", "notify=[]"]
+profile = "robokitty-devbox"
+
+{% for repo in robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) %}
+[projects.{{ repo.alias }}]
+path = "{{ repo.path }}"
+default_engine = "codex"
+worktree_base = "{{ repo.default_branch | default('main') }}"
+# Takopi may create worktrees. We prefer sibling paths via robokitty-new-worktree; keep this unset unless Takopi requires it.
+{% if repo.chat_id is defined %}
+chat_id = {{ repo.chat_id }}
+{% endif %}
+{% endfor %}

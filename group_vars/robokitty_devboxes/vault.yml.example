@@ -1,0 +1,12 @@
+---
+# Store these with ansible-vault. Do not commit real values.
+robokitty_takopi_bot_token: "VAULT_ME"
+
+# Optional; only if installing/authing Tailscale from Ansible.
+robokitty_tailscale_auth_key: "VAULT_ME_OPTIONAL"
+
+# Option B for GitHub App key storage. Option A is `robokitty_github_app_private_key_src`.
+robokitty_github_app_private_key_pem: |
+  -----BEGIN RSA PRIVATE KEY-----
+  VAULT_ME
+  -----END RSA PRIVATE KEY-----

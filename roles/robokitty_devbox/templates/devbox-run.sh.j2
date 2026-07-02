@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: devbox-run <repo-alias> <worktree-path> -- <command...>" >&2
+  exit 2
+}
+
+[ "$#" -ge 4 ] || usage
+alias="$1"; shift
+worktree="$1"; shift
+[ "${1:-}" = "--" ] || usage
+shift
+[ "$#" -gt 0 ] || usage
+
+config="{{ robokitty_config_dir }}/repos.json"
+repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
+image="$(jq -r --arg a "$alias" '.repos[$a].container_image // empty' "$config")"
+[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
+[ -n "$image" ] || image="{{ robokitty_podman_default_image }}"
+
+real_worktree="$(realpath "$worktree")"
+repo_parent="$(dirname "$(realpath "$repo_path")")"
+case "$real_worktree" in
+  "$repo_parent"/*) ;;
+  *) echo "worktree must be under $repo_parent" >&2; exit 2 ;;
+esac
+
+exec podman run --rm \
+  --pull={{ robokitty_podman_pull_policy }} \
+  --userns=keep-id \
+  --security-opt=no-new-privileges \
+  --cap-drop=ALL \
+  --network={{ robokitty_podman_network }} \
+  -v "$real_worktree:/workspace:rw" \
+  -w /workspace \
+  "$image" "$@"

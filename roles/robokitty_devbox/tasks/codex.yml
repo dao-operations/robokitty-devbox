@@ -1,0 +1,31 @@
+---
+- name: Install Codex as runner user
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if ! command -v codex >/dev/null 2>&1; then
+      curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+  changed_when: false
+
+- name: Render Codex config
+  ansible.builtin.template:
+    src: codex-config.toml.j2
+    dest: "/home/{{ robokitty_runner_user }}/.codex/config.toml"
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    mode: "0600"
+
+- name: Ensure runner PATH includes local bins
+  ansible.builtin.blockinfile:
+    path: "/home/{{ robokitty_runner_user }}/.profile"
+    marker: "# {mark} ROBOKITTY CODEX PATH"
+    block: |
+      export PATH="$HOME/.local/bin:$HOME/bin:/usr/local/bin:$PATH"
+    create: true
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    mode: "0644"

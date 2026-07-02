@@ -9,4 +9,4 @@ unset OPENAI_API_KEY
 unset CODEX_API_KEY
 unset SSH_AUTH_SOCK
 
-exec sudo -H -n -u {{ robokitty_runner_user }} -- /usr/local/bin/codex "$@"
+exec sudo -H -n -u {{ robokitty_runner_user }} -- {{ robokitty_codex_binary | quote }} "$@"

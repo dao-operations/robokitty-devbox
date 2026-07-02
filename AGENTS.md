@@ -31,6 +31,14 @@ Implement a small, auditable, security-conscious remote development box using An
 
 ## Validation commands
 
+Preferred local validation uses the repo Makefile and `uv`:
+
+```bash
+make ci
+```
+
+For a lightweight syntax-only check:
+
 ```bash
 ansible-playbook -i inventories/example/hosts.yml playbooks/robokitty_devbox.yml --syntax-check
 ```

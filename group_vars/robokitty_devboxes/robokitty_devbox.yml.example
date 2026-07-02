@@ -1,6 +1,18 @@
 ---
 robokitty_hostname: robokitty-devbox
 
+# Until pinned installer checksums are documented, P0 bootstrap requires an
+# explicit inventory-level acceptance for the upstream installer scripts.
+# Prefer setting robokitty_*_installer_checksum when available.
+robokitty_codex_installer_allow_unverified: true
+robokitty_codex_installer_unverified_reason: >-
+  P0 bootstrap accepts the upstream Codex installer script until a pinned artifact is documented.
+robokitty_uv_installer_allow_unverified: true
+robokitty_uv_installer_unverified_reason: >-
+  P0 bootstrap accepts the upstream uv installer script until a pinned artifact is documented.
+robokitty_takopi_allow_unpinned: true
+robokitty_takopi_unpinned_reason: "P0 bootstrap accepts latest Takopi until a version pin is selected."
+
 robokitty_takopi_chat_id: null
 robokitty_takopi_allowed_user_ids:
   - 123456789

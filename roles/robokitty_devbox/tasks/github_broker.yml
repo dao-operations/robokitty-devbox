@@ -25,6 +25,7 @@
     owner: "{{ robokitty_git_user }}"
     group: "{{ robokitty_git_user }}"
     mode: "0600"
+  no_log: true
   when: robokitty_github_app_private_key_src | length > 0
 
 - name: Write GitHub App private key from vault variable
@@ -34,6 +35,7 @@
     owner: "{{ robokitty_git_user }}"
     group: "{{ robokitty_git_user }}"
     mode: "0600"
+  no_log: true
   when: robokitty_github_app_private_key_pem | length > 0
 
 - name: Install GitHub broker scripts

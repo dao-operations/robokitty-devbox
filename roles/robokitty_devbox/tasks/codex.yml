@@ -1,15 +1,23 @@
 ---
+- name: Download Codex installer
+  ansible.builtin.get_url:
+    url: "{{ robokitty_codex_installer_url }}"
+    dest: /tmp/robokitty-codex-install.sh
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "{{ robokitty_codex_installer_checksum if (robokitty_codex_installer_checksum | trim | length > 0) else omit }}"
+
 - name: Install Codex as runner user
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if ! command -v codex >/dev/null 2>&1; then
-      curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh
-    fi
+  ansible.builtin.command: /tmp/robokitty-codex-install.sh
   args:
-    executable: /bin/bash
+    creates: "{{ robokitty_codex_binary }}"
   become: true
   become_user: "{{ robokitty_runner_user }}"
-  changed_when: false
+  environment:
+    CODEX_NON_INTERACTIVE: "1"
+    HOME: "/home/{{ robokitty_runner_user }}"
+    PATH: "/home/{{ robokitty_runner_user }}/.local/bin:/home/{{ robokitty_runner_user }}/bin:/usr/local/bin:/usr/bin:/bin"
 
 - name: Render Codex config
   ansible.builtin.template:

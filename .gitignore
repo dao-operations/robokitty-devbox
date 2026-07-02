@@ -1,6 +1,7 @@
 # Ansible
 *.retry
 .vault-pass
+.ansible/
 vault*.yml
 !vault.yml.example
 
@@ -8,6 +9,7 @@ vault*.yml
 __pycache__/
 *.pyc
 .venv/
+.uv-cache/
 
 # Local inventories
 inventories/local/

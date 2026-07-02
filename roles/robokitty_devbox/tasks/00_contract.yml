@@ -1,0 +1,128 @@
+---
+- name: "CONTRACT | Assert Ubuntu target"
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] is version('24.04', '>=')
+      - ansible_facts['distribution_version'] is version('25.00', '<')
+    fail_msg: "robokitty-devbox currently targets Ubuntu 24.04 LTS only."
+
+- name: "CONTRACT | Assert installer integrity policy"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (robokitty_install_codex | bool) or
+        (robokitty_codex_installer_checksum | trim | length > 0) or
+        (
+          (robokitty_codex_installer_allow_unverified | bool) and
+          (robokitty_codex_installer_unverified_reason | trim | length > 0)
+        )
+      - >-
+        not (robokitty_install_takopi | bool) or
+        (robokitty_uv_installer_checksum | trim | length > 0) or
+        (
+          (robokitty_uv_installer_allow_unverified | bool) and
+          (robokitty_uv_installer_unverified_reason | trim | length > 0)
+        )
+    fail_msg: >-
+      Installer downloads require either a checksum or an explicit unverified-installer
+      approval with a non-empty reason.
+
+- name: "CONTRACT | Assert Takopi package pinning policy"
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (robokitty_install_takopi | bool) or
+        (robokitty_takopi_package is search('[<>=!~]=?')) or
+        (
+          (robokitty_takopi_allow_unpinned | bool) and
+          (robokitty_takopi_unpinned_reason | trim | length > 0)
+        )
+    fail_msg: "Takopi install must be version-pinned, or unpinned install must be explicitly approved with a reason."
+
+- name: "CONTRACT | Assert local account and privileged path values are safe"
+  ansible.builtin.assert:
+    that:
+      - robokitty_bridge_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_git_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_work_group is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_codex_binary is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_codex_binary.split('/')"
+      - >-
+        (robokitty_codex_binary is search('^/home/' ~ robokitty_runner_user ~ '/\\.local/bin/')) or
+        (robokitty_codex_binary is search('^/usr/local/bin/'))
+    fail_msg: "Local user/group names and the Codex binary path must be safe for sudoers and shell rendering."
+
+- name: "CONTRACT | Assert Codex permission policy"
+  ansible.builtin.assert:
+    that:
+      - robokitty_codex_auth_method == 'chatgpt'
+      - robokitty_codex_approvals_reviewer == 'auto_review'
+      - robokitty_codex_enable_network | bool
+      - robokitty_codex_approval_policy != 'danger-full-access'
+    fail_msg: "Codex must use ChatGPT login, Auto-review, internet access, and no danger-full-access."
+  when: robokitty_install_codex | bool
+
+- name: "CONTRACT | Assert GitHub broker guardrails"
+  ansible.builtin.assert:
+    that:
+      - not (robokitty_github_allow_merge | bool)
+      - not (robokitty_github_allow_workflow_dispatch | bool)
+      - robokitty_github_submit_mode == 'safe-squash'
+      - robokitty_github_allowed_branch_prefix == 'agent/'
+    fail_msg: "P0 GitHub broker must stay draft-PR-only with safe-squash agent/* branches."
+  when: robokitty_github_broker_enabled | bool
+
+- name: "CONTRACT | Assert Takopi service secrets when service is enabled"
+  ansible.builtin.assert:
+    that:
+      - robokitty_takopi_bot_token | trim | length > 0
+      - robokitty_takopi_chat_id is not none
+      - robokitty_takopi_allowed_user_ids | length > 0
+    fail_msg: "Takopi service is enabled but bot token, chat_id, or allowed_user_ids are incomplete."
+  when:
+    - robokitty_install_takopi | bool
+    - robokitty_enable_takopi_service | bool
+    - robokitty_start_takopi_service | bool
+
+- name: "CONTRACT | Assert GitHub App config when broker is enabled"
+  ansible.builtin.assert:
+    that:
+      - robokitty_github_app_id | trim | length > 0
+      - robokitty_github_app_installation_id | trim | length > 0
+      - >-
+        (
+          (robokitty_github_app_private_key_pem | trim | length > 0) | ternary(1, 0)
+        ) +
+        (
+          (robokitty_github_app_private_key_src | trim | length > 0) | ternary(1, 0)
+        ) == 1
+    fail_msg: >-
+      GitHub broker is enabled but app id, installation id, or exactly one private key
+      source is not configured.
+  when: robokitty_github_broker_enabled | bool
+
+- name: "CONTRACT | Build configured repository list"
+  ansible.builtin.set_fact:
+    robokitty_all_repos: "{{ robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) }}"
+
+- name: "CONTRACT | Assert configured repository entries are complete"
+  ansible.builtin.assert:
+    that:
+      - item is mapping
+      - item.alias is defined
+      - item.alias | string | trim | length > 0
+      - item.owner is defined
+      - item.owner | string | trim | length > 0
+      - item.repo is defined
+      - item.repo | string | trim | length > 0
+      - item.clone_url is defined
+      - item.clone_url | string | trim | length > 0
+      - item.path is defined
+      - item.path | string is search('^' ~ robokitty_root ~ '/')
+      - item.allowed_base_branches | default([item.default_branch | default('main')]) | length > 0
+    fail_msg: "Each repo must define alias, owner, repo, clone_url, path under robokitty_root, and base branches."
+  loop: "{{ robokitty_all_repos }}"
+  loop_control:
+    label: "{{ item.alias | default('unknown') }}"

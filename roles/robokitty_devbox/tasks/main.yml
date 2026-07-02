@@ -1,17 +1,49 @@
 ---
-- import_tasks: preflight.yml
-- import_tasks: users.yml
-- import_tasks: base.yml
-- import_tasks: security.yml
-- import_tasks: codex.yml
+- name: "CONTRACT | Validate Robokitty role inputs"
+  ansible.builtin.include_tasks: 00_contract.yml
+  tags: [always]
+
+- name: "SETUP | Create users and directories"
+  ansible.builtin.include_tasks: users.yml
+  tags: [setup]
+
+- name: "SETUP | Install base packages"
+  ansible.builtin.include_tasks: base.yml
+  tags: [setup]
+
+- name: "SECURITY | Configure host security baseline"
+  ansible.builtin.include_tasks: security.yml
+  tags: [security]
+
+- name: "CODEX | Install and configure Codex"
+  ansible.builtin.include_tasks: codex.yml
+  tags: [codex]
   when: robokitty_install_codex | bool
-- import_tasks: takopi.yml
+
+- name: "TAKOPI | Install and configure Telegram bridge"
+  ansible.builtin.include_tasks: takopi.yml
+  tags: [takopi]
   when: robokitty_install_takopi | bool
-- import_tasks: github_broker.yml
+
+- name: "GITHUB | Install restricted GitHub broker"
+  ansible.builtin.include_tasks: github_broker.yml
+  tags: [github]
   when: robokitty_github_broker_enabled | bool
-- import_tasks: podman.yml
+
+- name: "PODMAN | Install repo command wrapper"
+  ansible.builtin.include_tasks: podman.yml
+  tags: [podman]
   when: robokitty_podman_enabled | bool
-- import_tasks: live_config.yml
+
+- name: "LIVE | Configure live guidance and drift helpers"
+  ansible.builtin.include_tasks: live_config.yml
+  tags: [live_config]
   when: robokitty_live_config_enabled | bool
-- import_tasks: repos.yml
-- import_tasks: status.yml
+
+- name: "REPOS | Clone configured repositories and install worktree helpers"
+  ansible.builtin.include_tasks: repos.yml
+  tags: [repos]
+
+- name: "STATUS | Install status and security check helpers"
+  ansible.builtin.include_tasks: status.yml
+  tags: [status]

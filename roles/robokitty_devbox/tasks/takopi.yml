@@ -1,18 +1,41 @@
 ---
-- name: Install uv and Takopi as bridge user
-  ansible.builtin.shell: |
-    set -euo pipefail
-    if ! command -v uv >/dev/null 2>&1; then
-      curl -LsSf https://astral.sh/uv/install.sh | sh
-    fi
-    export PATH="$HOME/.local/bin:$PATH"
-    uv python install 3.14
-    uv tool install -U takopi
+- name: Download uv installer
+  ansible.builtin.get_url:
+    url: "{{ robokitty_uv_installer_url }}"
+    dest: /tmp/robokitty-uv-install.sh
+    owner: root
+    group: root
+    mode: "0755"
+    checksum: "{{ robokitty_uv_installer_checksum if (robokitty_uv_installer_checksum | trim | length > 0) else omit }}"
+
+- name: Install uv as bridge user
+  ansible.builtin.command: /tmp/robokitty-uv-install.sh
   args:
-    executable: /bin/bash
+    creates: "/home/{{ robokitty_bridge_user }}/.local/bin/uv"
+  become: true
+  become_user: "{{ robokitty_bridge_user }}"
+  environment:
+    HOME: "/home/{{ robokitty_bridge_user }}"
+    UV_NO_MODIFY_PATH: "1"
+
+- name: Install Takopi Python runtime
+  ansible.builtin.command: "/home/{{ robokitty_bridge_user }}/.local/bin/uv python install {{ robokitty_takopi_uv_python }}"
   become: true
   become_user: "{{ robokitty_bridge_user }}"
   changed_when: false
+  environment:
+    HOME: "/home/{{ robokitty_bridge_user }}"
+    PATH: "/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+- name: Install Takopi as bridge user
+  ansible.builtin.command: "/home/{{ robokitty_bridge_user }}/.local/bin/uv tool install {{ robokitty_takopi_package }}"
+  args:
+    creates: "/home/{{ robokitty_bridge_user }}/.local/bin/takopi"
+  become: true
+  become_user: "{{ robokitty_bridge_user }}"
+  environment:
+    HOME: "/home/{{ robokitty_bridge_user }}"
+    PATH: "/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 - name: Render Takopi config
   ansible.builtin.template:
@@ -21,6 +44,7 @@
     owner: "{{ robokitty_bridge_user }}"
     group: "{{ robokitty_bridge_user }}"
     mode: "0600"
+  no_log: true
   notify: Restart takopi
 
 - name: Install Codex wrapper

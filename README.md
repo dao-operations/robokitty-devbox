@@ -71,6 +71,21 @@ Start with WP0 and WP1. Keep changes small. Do not implement outside the documen
 
 Use the prompts in `prompts/` for structured implementation, review, and integration passes.
 
+## Local validation
+
+Install Ansible collections and run the local checks with `uv`:
+
+```bash
+make install-dev
+make ci
+```
+
+For a syntax-only pass:
+
+```bash
+make syntax
+```
+
 ## Current status
 
 This is a project skeleton and implementation brief, not a finished Ansible role. The role contains enough scaffolding and templates to let Codex begin implementation without re-litigating the architecture.

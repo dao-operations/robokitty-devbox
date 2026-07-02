@@ -68,6 +68,11 @@ robokitty_allowed_ssh_cidrs:
   - "0.0.0.0/0"
 
 robokitty_install_codex: true
+robokitty_codex_binary: "/home/{{ robokitty_runner_user }}/.local/bin/codex"
+robokitty_codex_installer_url: https://chatgpt.com/codex/install.sh
+robokitty_codex_installer_checksum: ""
+robokitty_codex_installer_allow_unverified: false
+robokitty_codex_installer_unverified_reason: ""
 robokitty_codex_enable_network: true
 robokitty_codex_approval_policy: on-request
 robokitty_codex_approvals_reviewer: auto_review
@@ -75,6 +80,14 @@ robokitty_codex_auth_method: chatgpt
 robokitty_codex_credentials_store: file
 
 robokitty_install_takopi: true
+robokitty_uv_installer_url: https://astral.sh/uv/install.sh
+robokitty_uv_installer_checksum: ""
+robokitty_uv_installer_allow_unverified: false
+robokitty_uv_installer_unverified_reason: ""
+robokitty_takopi_uv_python: "3.14"
+robokitty_takopi_package: takopi
+robokitty_takopi_allow_unpinned: false
+robokitty_takopi_unpinned_reason: ""
 robokitty_takopi_bot_token: ""
 robokitty_takopi_chat_id: null
 robokitty_takopi_allowed_user_ids: []

@@ -47,6 +47,8 @@ scripts/                    Local helper scripts for this repo
 
 ## First useful milestone
 
+This milestone is intentionally documentation-only so the full agent-to-PR loop can be tested without changing infrastructure behavior.
+
 From Telegram, tell Robokitty to:
 
 ```text

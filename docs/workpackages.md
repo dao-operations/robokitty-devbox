@@ -124,6 +124,12 @@ Exit criteria:
 
 - Telegram -> Codex -> worktree -> githubctl -> GitHub PR works.
 
+Production smoke status on 2026-07-07:
+
+- Telegram-launched Codex submitted draft PR https://github.com/dao-operations/robokitty-devbox/pull/2 through `githubctl`.
+- `githubctl pr checks` returned `ok` with an empty checks list, meaning no GitHub CI signal is configured yet.
+- This validates the local Telegram -> Codex -> `githubctl` broker -> GitHub PR path, but not repository CI.
+
 ## WP9 — Hardening backlog
 
 Tasks:

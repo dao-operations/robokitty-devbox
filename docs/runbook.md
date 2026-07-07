@@ -111,6 +111,13 @@ Report the PR URL.
 Do not merge.
 ```
 
+Production smoke status on 2026-07-07:
+
+- Telegram-launched Codex submitted a draft PR through `githubctl`.
+- Successful smoke PR: https://github.com/dao-operations/robokitty-devbox/pull/2
+- `githubctl pr checks` returned `ok` with an empty checks list, so no GitHub CI signal is configured yet.
+- This validates the local Telegram -> Codex -> `githubctl` broker -> GitHub PR path, but not repository CI.
+
 ## 9. Weekly drift sync
 
 ```bash

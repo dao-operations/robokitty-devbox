@@ -7,7 +7,10 @@
   "default_pr_draft": {{ robokitty_github_default_pr_draft | bool | to_json }},
   "allow_merge": {{ robokitty_github_allow_merge | bool | to_json }},
   "allow_workflow_dispatch": {{ robokitty_github_allow_workflow_dispatch | bool | to_json }},
+  "allow_workflow_changes": {{ robokitty_github_allow_workflow_changes | bool | to_json }},
+  "maintainer_can_modify": {{ robokitty_github_maintainer_can_modify | bool | to_json }},
   "submit_mode": {{ robokitty_github_submit_mode | to_json }},
+  "expected_owner": {{ robokitty_github_expected_owner | to_json }},
   "repos": {
 {% set all_repos = robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) %}
 {% for repo in all_repos %}
@@ -17,12 +20,15 @@
       "repo": {{ repo.repo | to_json }},
       "full_name": {{ (repo.owner ~ '/' ~ repo.repo) | to_json }},
       "clone_url": {{ repo.clone_url | to_json }},
+      "fork_repo": {{ repo.fork_repo | default(repo.repo) | to_json }},
+      "allow_fork_create": {{ repo.allow_fork_create | default(true) | bool | to_json }},
       "path": {{ repo.path | to_json }},
       "default_branch": {{ repo.default_branch | default('main') | to_json }},
       "allowed_base_branches": {{ repo.allowed_base_branches | default([repo.default_branch | default('main')]) | to_json }},
       "allow_push": {{ repo.allow_push | default(false) | bool | to_json }},
       "allow_pr_create": {{ repo.allow_pr_create | default(false) | bool | to_json }},
       "container_image": {{ repo.container_image | default(robokitty_podman_default_image) | to_json }},
+      "container_workdir": {{ repo.container_workdir | default('.') | to_json }},
       "pr_labels": {{ repo.pr_labels | default([]) | to_json }}
     }{% if not loop.last %},{% endif %}
 {% endfor %}

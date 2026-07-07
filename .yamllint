@@ -6,8 +6,14 @@ ignore: |
   .uv-cache/
 
 rules:
+  braces:
+    max-spaces-inside: 1
+  comments-indentation: false
   line-length:
     max: 120
     level: warning
   comments:
     min-spaces-from-content: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

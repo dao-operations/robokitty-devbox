@@ -1,4 +1,37 @@
 ---
+- name: Inspect live Codex destination paths
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  register: robokitty_live_codex_destination_stats
+  loop:
+    - path: "{{ robokitty_live_dir }}/codex"
+      type: directory
+    - path: "{{ robokitty_live_dir }}/codex/skills"
+      type: directory
+    - path: "{{ robokitty_live_dir }}/codex/AGENTS.md"
+      type: file
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Assert live Codex destination paths are not symlinks
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false))
+      - >-
+        not (item.stat.exists | default(false)) or
+        (
+          item.item.type == 'directory' and
+          item.stat.isdir | default(false)
+        ) or (
+          item.item.type == 'file' and
+          item.stat.isreg | default(false)
+        )
+    fail_msg: "Live Codex destination paths must be real directories/files, not symlinks or special files."
+  loop: "{{ robokitty_live_codex_destination_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
 - name: Create live codex directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -6,6 +39,7 @@
     owner: "{{ robokitty_runner_user }}"
     group: "{{ robokitty_work_group }}"
     mode: "2775"
+    follow: false
   loop:
     - "{{ robokitty_live_dir }}/codex"
     - "{{ robokitty_live_dir }}/codex/skills"
@@ -14,10 +48,97 @@
   ansible.builtin.template:
     src: global-AGENTS.md.j2
     dest: "{{ robokitty_live_dir }}/codex/AGENTS.md"
-    owner: "{{ robokitty_runner_user }}"
-    group: "{{ robokitty_work_group }}"
     mode: "0664"
     force: false
+    follow: false
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+
+- name: Resolve live Codex skill seed source path
+  ansible.builtin.set_fact:
+    robokitty_live_seed_skills_dir: "{{ (robokitty_live_seed_source_dir ~ '/skills') | realpath }}"
+
+- name: Inspect live Codex skill seed source
+  ansible.builtin.stat:
+    path: "{{ robokitty_live_seed_skills_dir }}"
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: robokitty_live_seed_skills_stat
+
+- name: Assert live Codex skill seed source is safe
+  ansible.builtin.assert:
+    that:
+      - robokitty_live_seed_skills_stat.stat.exists
+      - robokitty_live_seed_skills_stat.stat.isdir
+      - not (robokitty_live_seed_skills_stat.stat.islnk | default(false))
+    fail_msg: "Live Codex skill seed source must be a real controller-side directory."
+
+- name: Find live Codex skill seed entries
+  ansible.builtin.find:
+    paths: "{{ robokitty_live_seed_skills_dir }}"
+    recurse: true
+    file_type: any
+    follow: false
+  delegate_to: localhost
+  become: false
+  register: robokitty_live_seed_skill_entries
+
+- name: Assert live Codex skill seed entries are safe
+  ansible.builtin.assert:
+    that:
+      - not (item.islnk | default(false))
+      - item.path.startswith(robokitty_live_seed_skill_prefix)
+      - >-
+        (
+          item.isdir | default(false) and
+          robokitty_live_seed_skill_relpath is match('^[A-Za-z0-9_-]+$')
+        ) or (
+          item.isreg | default(false) and
+          robokitty_live_seed_skill_relpath is match('^[A-Za-z0-9_-]+/SKILL[.]md$')
+        )
+    fail_msg: "Live Codex skill seeds may only contain skills/<name>/SKILL.md regular files."
+  vars:
+    robokitty_live_seed_skill_prefix: "{{ robokitty_live_seed_skills_dir ~ '/' }}"
+    robokitty_live_seed_skill_relpath: >-
+      {{ item.path | replace(robokitty_live_seed_skill_prefix, '') }}
+  loop: "{{ robokitty_live_seed_skill_entries.files }}"
+  loop_control:
+    label: "{{ robokitty_live_seed_skill_relpath }}"
+
+- name: Create live Codex skill seed directories if missing
+  ansible.builtin.file:
+    path: "{{ robokitty_live_dir }}/codex/skills/{{ robokitty_live_seed_skill_relpath }}"
+    state: directory
+    mode: "2775"
+    follow: false
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+  vars:
+    robokitty_live_seed_skill_prefix: "{{ robokitty_live_seed_skills_dir ~ '/' }}"
+    robokitty_live_seed_skill_relpath: >-
+      {{ item.path | replace(robokitty_live_seed_skill_prefix, '') }}
+  loop: "{{ robokitty_live_seed_skill_entries.files | selectattr('isdir') | list }}"
+  loop_control:
+    label: "{{ robokitty_live_seed_skill_relpath }}"
+
+- name: Seed live Codex skill files if missing
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ robokitty_live_dir }}/codex/skills/{{ robokitty_live_seed_skill_relpath }}"
+    mode: "0664"
+    force: false
+    local_follow: false
+    follow: false
+  become: true
+  become_user: "{{ robokitty_runner_user }}"
+  vars:
+    robokitty_live_seed_skill_prefix: "{{ robokitty_live_seed_skills_dir ~ '/' }}"
+    robokitty_live_seed_skill_relpath: >-
+      {{ item.path | replace(robokitty_live_seed_skill_prefix, '') }}
+  loop: "{{ robokitty_live_seed_skill_entries.files | selectattr('isreg') | list }}"
+  loop_control:
+    label: "{{ robokitty_live_seed_skill_relpath }}"
 
 - name: Symlink runner AGENTS.md to live copy
   ansible.builtin.file:
@@ -26,6 +147,7 @@
     state: link
     owner: "{{ robokitty_runner_user }}"
     group: "{{ robokitty_runner_user }}"
+    force: true
 
 - name: Symlink runner skills to live skills
   ansible.builtin.file:
@@ -44,5 +166,7 @@
     group: root
     mode: "0755"
   loop:
-    - { src: robokitty-drift-report.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-drift-report" }
-    - { src: robokitty-sync-live-to-infra.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-sync-live-to-infra" }
+    - src: robokitty-drift-report.sh.j2
+      dest: "{{ robokitty_bindir }}/robokitty-drift-report"
+    - src: robokitty-sync-live-to-infra.sh.j2
+      dest: "{{ robokitty_bindir }}/robokitty-sync-live-to-infra"

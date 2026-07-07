@@ -6,7 +6,18 @@
     owner: root
     group: root
     mode: "0755"
-    checksum: "{{ robokitty_codex_installer_checksum if (robokitty_codex_installer_checksum | trim | length > 0) else omit }}"
+    checksum: >-
+      {{ robokitty_codex_installer_checksum
+      if (robokitty_codex_installer_checksum | trim | length > 0)
+      else omit }}
+
+- name: Create system Codex config directory
+  ansible.builtin.file:
+    path: "{{ robokitty_codex_requirements_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
 - name: Install Codex as runner user
   ansible.builtin.command: /tmp/robokitty-codex-install.sh
@@ -17,7 +28,32 @@
   environment:
     CODEX_NON_INTERACTIVE: "1"
     HOME: "/home/{{ robokitty_runner_user }}"
-    PATH: "/home/{{ robokitty_runner_user }}/.local/bin:/home/{{ robokitty_runner_user }}/bin:/usr/local/bin:/usr/bin:/bin"
+    PATH: >-
+      {{
+        [
+          '/home/' ~ robokitty_runner_user ~ '/.local/bin',
+          '/home/' ~ robokitty_runner_user ~ '/bin',
+          '/usr/local/bin',
+          '/usr/bin',
+          '/bin'
+        ] | join(':')
+      }}
+
+- name: Render Codex managed requirements
+  ansible.builtin.template:
+    src: codex-requirements.toml.j2
+    dest: "{{ robokitty_codex_requirements_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render system Codex config
+  ansible.builtin.template:
+    src: codex-system-config.toml.j2
+    dest: "{{ robokitty_codex_system_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Render Codex config
   ansible.builtin.template:
@@ -26,6 +62,11 @@
     owner: "{{ robokitty_runner_user }}"
     group: "{{ robokitty_runner_user }}"
     mode: "0600"
+
+- name: Remove legacy githubctl Codex exec rule
+  ansible.builtin.file:
+    path: "{{ robokitty_codex_requirements_dir }}/rules/robokitty-githubctl.rules"
+    state: absent
 
 - name: Ensure runner PATH includes local bins
   ansible.builtin.blockinfile:

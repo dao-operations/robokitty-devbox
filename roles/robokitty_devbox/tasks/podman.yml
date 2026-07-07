@@ -1,4 +1,10 @@
 ---
+- name: Install rootless Podman packages
+  ansible.builtin.apt:
+    name: "{{ robokitty_podman_packages }}"
+    state: present
+    update_cache: true
+
 - name: Ensure rootless Podman storage dir exists
   ansible.builtin.file:
     path: "/home/{{ robokitty_runner_user }}/.local/share/containers"
@@ -6,6 +12,174 @@
     owner: "{{ robokitty_runner_user }}"
     group: "{{ robokitty_runner_user }}"
     mode: "0700"
+
+- name: Ensure rootless Podman config dir exists
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_runner_user }}/.config/containers"
+    state: directory
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    mode: "0700"
+
+- name: Configure rootless Podman storage for runner
+  ansible.builtin.copy:
+    dest: "/home/{{ robokitty_runner_user }}/.config/containers/storage.conf"
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_runner_user }}"
+    mode: "0600"
+    content: |
+      # Managed by robokitty-devbox.
+      [storage]
+      driver = "overlay"
+
+      [storage.options.overlay]
+      mount_program = "/usr/bin/fuse-overlayfs"
+      mountopt = "nodev"
+
+- name: Inspect Ubuntu AppArmor user namespace restriction for Podman
+  ansible.builtin.stat:
+    path: /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+  register: robokitty_podman_apparmor_userns_restriction
+  when: robokitty_podman_apparmor_userns_profiles | bool
+
+- name: Install rootless Podman AppArmor user namespace profiles
+  ansible.builtin.copy:
+    dest: "/etc/apparmor.d/{{ item.profile }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by robokitty-devbox.
+      # Allow rootless Podman runtime helpers to use unprivileged user
+      # namespaces on Ubuntu systems that restrict them through AppArmor.
+      abi <abi/4.0>,
+
+      include <tunables/global>
+
+      {{ item.path }} flags=(unconfined) {
+        userns,
+
+        include if exists <local/{{ item.profile }}>
+      }
+  loop: "{{ robokitty_podman_apparmor_binaries }}"
+  register: robokitty_podman_apparmor_profiles
+  when:
+    - robokitty_podman_apparmor_userns_profiles | bool
+    - robokitty_podman_apparmor_userns_restriction.stat.exists | default(false)
+
+- name: Inspect loaded rootless Podman AppArmor profiles
+  ansible.builtin.command:
+    argv:
+      - awk
+      - -v
+      - "profile={{ item.path }}"
+      - >-
+        $1 == profile { found = 1 }
+        END { exit found ? 0 : 1 }
+      - /sys/kernel/security/apparmor/profiles
+  loop: "{{ robokitty_podman_apparmor_binaries }}"
+  register: robokitty_podman_apparmor_loaded
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - robokitty_podman_apparmor_userns_profiles | bool
+    - robokitty_podman_apparmor_userns_restriction.stat.exists | default(false)
+
+- name: Load rootless Podman AppArmor user namespace profiles
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/apparmor_parser
+      - -r
+      - "/etc/apparmor.d/{{ item.item.profile }}"
+  loop: "{{ robokitty_podman_apparmor_loaded.results | default([]) }}"
+  changed_when: true
+  when:
+    - robokitty_podman_apparmor_userns_profiles | bool
+    - robokitty_podman_apparmor_userns_restriction.stat.exists | default(false)
+    - >-
+      (robokitty_podman_apparmor_profiles.changed | default(false)) or
+      (item.rc | default(1) != 0)
+    - not ansible_check_mode
+
+- name: Check runner subordinate UID range
+  ansible.builtin.command:
+    argv:
+      - awk
+      - "-F:"
+      - -v
+      - "user={{ robokitty_runner_user }}"
+      - -v
+      - "min={{ robokitty_podman_subuid_count }}"
+      - >-
+        $1 == user {
+          runner_count++;
+          runner_start[runner_count] = $2;
+          runner_end[runner_count] = $2 + $3 - 1;
+          if ($3 >= min) { found = 1 }
+          next;
+        }
+        {
+          other_count++;
+          other_start[other_count] = $2;
+          other_end[other_count] = $2 + $3 - 1;
+        }
+        END {
+          if (!found) { exit 1 }
+          for (i = 1; i <= runner_count; i++) {
+            for (j = 1; j <= other_count; j++) {
+              if (!(runner_end[i] < other_start[j] || runner_start[i] > other_end[j])) {
+                exit 2;
+              }
+            }
+          }
+        }
+      - /etc/subuid
+  changed_when: false
+
+- name: Check runner subordinate GID range
+  ansible.builtin.command:
+    argv:
+      - awk
+      - "-F:"
+      - -v
+      - "user={{ robokitty_runner_user }}"
+      - -v
+      - "min={{ robokitty_podman_subgid_count }}"
+      - >-
+        $1 == user {
+          runner_count++;
+          runner_start[runner_count] = $2;
+          runner_end[runner_count] = $2 + $3 - 1;
+          if ($3 >= min) { found = 1 }
+          next;
+        }
+        {
+          other_count++;
+          other_start[other_count] = $2;
+          other_end[other_count] = $2 + $3 - 1;
+        }
+        END {
+          if (!found) { exit 1 }
+          for (i = 1; i <= runner_count; i++) {
+            for (j = 1; j <= other_count; j++) {
+              if (!(runner_end[i] < other_start[j] || runner_start[i] > other_end[j])) {
+                exit 2;
+              }
+            }
+          }
+        }
+      - /etc/subgid
+  changed_when: false
+
+- name: Enable lingering for runner rootless Podman sessions
+  ansible.builtin.command:
+    argv:
+      - loginctl
+      - enable-linger
+      - "{{ robokitty_runner_user }}"
+    creates: "/var/lib/systemd/linger/{{ robokitty_runner_user }}"
+  when: robokitty_podman_enable_linger | bool
 
 - name: Install devbox-run wrapper
   ansible.builtin.template:

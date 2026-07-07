@@ -8,6 +8,127 @@
     mode: "0440"
     validate: /usr/sbin/visudo -cf %s
 
+- name: Enable unprivileged user namespace cloning for Codex sandbox
+  ansible.builtin.sysctl:
+    name: kernel.unprivileged_userns_clone
+    value: "1"
+    sysctl_file: /etc/sysctl.d/60-robokitty-codex-sandbox.conf
+    sysctl_set: true
+    reload: true
+    state: present
+  when: robokitty_codex_configure_user_namespaces | bool
+
+- name: Configure user namespace count for Codex sandbox
+  ansible.builtin.sysctl:
+    name: user.max_user_namespaces
+    value: "{{ robokitty_codex_user_max_user_namespaces | string }}"
+    sysctl_file: /etc/sysctl.d/60-robokitty-codex-sandbox.conf
+    sysctl_set: true
+    reload: true
+    state: present
+  when: robokitty_codex_configure_user_namespaces | bool
+
+- name: Inspect Ubuntu AppArmor user namespace restriction
+  ansible.builtin.stat:
+    path: /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+  register: robokitty_apparmor_userns_restriction
+  when: robokitty_codex_configure_user_namespaces | bool
+
+- name: Install bubblewrap AppArmor profile for Codex sandbox
+  ansible.builtin.copy:
+    dest: /etc/apparmor.d/usr.bin.bwrap
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by robokitty-devbox.
+      # Allow bubblewrap to create user namespaces on Ubuntu systems that
+      # restrict unprivileged user namespaces through AppArmor.
+      abi <abi/4.0>,
+
+      /usr/bin/bwrap flags=(default_allow) {
+        userns,
+      }
+  register: robokitty_bwrap_apparmor_profile
+  when:
+    - robokitty_codex_configure_user_namespaces | bool
+    - robokitty_codex_apparmor_bwrap_profile | bool
+    - robokitty_apparmor_userns_restriction.stat.exists | default(false)
+
+- name: Inspect loaded bubblewrap AppArmor profile
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -E
+      - "^/usr/bin/bwrap([[:space:]]|$)"
+      - /sys/kernel/security/apparmor/profiles
+  register: robokitty_bwrap_apparmor_loaded
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - robokitty_codex_configure_user_namespaces | bool
+    - robokitty_codex_apparmor_bwrap_profile | bool
+    - robokitty_apparmor_userns_restriction.stat.exists | default(false)
+
+- name: Load bubblewrap AppArmor profile for Codex sandbox
+  ansible.builtin.command:
+    argv:
+      - /usr/sbin/apparmor_parser
+      - -r
+      - /etc/apparmor.d/usr.bin.bwrap
+  changed_when: true
+  when:
+    - robokitty_codex_configure_user_namespaces | bool
+    - robokitty_codex_apparmor_bwrap_profile | bool
+    - robokitty_apparmor_userns_restriction.stat.exists | default(false)
+    - >-
+      (robokitty_bwrap_apparmor_profile.changed) or
+      (robokitty_bwrap_apparmor_loaded.rc | default(1) != 0)
+    - not ansible_check_mode
+
+- name: Configure fail2ban SSH jail
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/robokitty-sshd.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [sshd]
+      enabled = {{ robokitty_fail2ban_sshd_enabled | bool | ternary('true', 'false') }}
+      port = {{ robokitty_fail2ban_sshd_port }}
+      filter = sshd
+      backend = {{ robokitty_fail2ban_sshd_backend }}
+      logpath = {{ robokitty_fail2ban_sshd_logpath }}
+      maxretry = {{ robokitty_fail2ban_sshd_maxretry }}
+      findtime = {{ robokitty_fail2ban_sshd_findtime }}
+      bantime = {{ robokitty_fail2ban_sshd_bantime }}
+  notify: Restart fail2ban
+
+- name: Remove cloud-init SSH bootstrap drop-in after Ansible takes ownership
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/99-robokitty-bootstrap.conf
+    state: absent
+  notify: Restart ssh
+  when: robokitty_harden_sshd | bool
+
+- name: Configure SSH daemon hardening
+  ansible.builtin.template:
+    src: sshd-robokitty-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-robokitty-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Restart ssh
+  when: robokitty_harden_sshd | bool
+
+- name: Validate full SSH daemon configuration
+  ansible.builtin.command:
+    cmd: /usr/sbin/sshd -t
+  changed_when: false
+  when: robokitty_harden_sshd | bool
+
 - name: Configure UFW default incoming deny
   community.general.ufw:
     direction: incoming
@@ -27,7 +148,25 @@
     proto: tcp
     src: "{{ item }}"
   loop: "{{ robokitty_allowed_ssh_cidrs }}"
-  when: robokitty_configure_ufw | bool
+  when:
+    - robokitty_configure_ufw | bool
+    - robokitty_allowed_ssh_cidrs | length > 0
+    - not (robokitty_cloudflare_access_enabled | bool)
+
+- name: Remove broad public SSH allow rules in lockdown mode
+  community.general.ufw:
+    delete: true
+    rule: allow
+    port: '22'
+    proto: tcp
+    src: "{{ item }}"
+  loop:
+    - "0.0.0.0/0"
+    - "::/0"
+  when:
+    - robokitty_configure_ufw | bool
+    - (robokitty_lockdown_public_ssh | bool) or
+      (robokitty_cloudflare_access_enabled | bool)
 
 - name: Block common cloud metadata endpoint
   community.general.ufw:
@@ -41,8 +180,16 @@
     state: enabled
   when: robokitty_configure_ufw | bool
 
-- name: Enable fail2ban
+- name: Gather service facts in check mode
+  ansible.builtin.service_facts:
+  when: ansible_check_mode
+
+- name: Manage fail2ban
   ansible.builtin.service:
     name: fail2ban
-    enabled: true
-    state: started
+    enabled: "{{ robokitty_fail2ban_sshd_enabled | bool }}"
+    state: "{{ robokitty_fail2ban_sshd_enabled | bool | ternary('started', 'stopped') }}"
+  when: >-
+    (not ansible_check_mode) or
+    ('fail2ban.service' in (ansible_facts.services | default({}))) or
+    ('fail2ban' in (ansible_facts.services | default({})))

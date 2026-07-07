@@ -9,16 +9,28 @@ User={{ robokitty_bridge_user }}
 Group={{ robokitty_bridge_user }}
 WorkingDirectory={{ robokitty_workdir }}
 Environment=HOME=/home/{{ robokitty_bridge_user }}
-Environment=PATH={{ robokitty_wrappers_dir }}:/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH={{ robokitty_wrappers_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/home/{{ robokitty_bridge_user }}/.local/bin
 ExecStart=/home/{{ robokitty_bridge_user }}/.local/bin/takopi
 Restart=on-failure
 RestartSec=5
 
-NoNewPrivileges=true
+# Takopi must cross to the Codex runner through the sudo wrapper.
+# NoNewPrivileges would block sudo's required setuid transition.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=false
-ReadWritePaths=/home/{{ robokitty_bridge_user }} {{ robokitty_workdir }}
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+{% if robokitty_enable_proc_hardening | bool %}
+ProtectProc=invisible
+{% endif %}
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/home/{{ robokitty_bridge_user }} {{ robokitty_workdir }} {{ robokitty_github_broker_exchange_dir }} {{ robokitty_worktree_source_dir }}
 UMask=0077
 
 [Install]

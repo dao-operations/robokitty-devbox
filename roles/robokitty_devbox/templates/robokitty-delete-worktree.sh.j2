@@ -1,20 +1,194 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-usage() { echo "usage: robokitty-delete-worktree <repo-alias> agent/<slug> [--delete-local-branch]" >&2; exit 2; }
-[ "$#" -ge 2 ] || usage
-alias="$1"; branch="$2"; delete_branch="${3:-}"
-[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || { echo "branch must match agent/[A-Za-z0-9._-]+" >&2; exit 2; }
-config="{{ robokitty_config_dir }}/repos.json"
-repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
-[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
-slug="${branch#agent/}"
-worktree_path="$(dirname "$repo_path")/$(basename "$repo_path").agent.$slug"
+usage() {
+  echo "usage: robokitty-delete-worktree <repo-alias> agent/<slug> [--delete-local-branch] [--force]" >&2
+  exit 2
+}
 
-cd "$repo_path"
-if [ -d "$worktree_path" ]; then
-  git worktree remove "$worktree_path"
+die() {
+  echo "robokitty-delete-worktree: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+git_common_dir() {
+  local repo="$1"
+  local path
+  path="$(git -C "$repo" rev-parse --git-common-dir)"
+  case "$path" in
+    /*) ;;
+    *) path="$repo/$path" ;;
+  esac
+  realpath "$path"
+}
+
+require_config_dir() {
+  local label="$1"
+  local path="$2"
+  [ -n "$path" ] || die "$label is empty"
+  [ ! -L "$path" ] || die "$label must not be a symlink: $path"
+  [ -d "$path" ] || die "$label does not exist: $path"
+  realpath "$path"
+}
+
+path_is_under() {
+  local path="$1"
+  local parent="$2"
+  case "$path" in
+    "$parent"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_repo_scope() {
+  local repo_root="$1"
+  local root_dir="$2"
+  local workdir_dir="$3"
+  local infra_dir="$4"
+
+  path_is_under "$repo_root" "$root_dir" || \
+    die "configured repo root is outside configured root: $repo_root"
+  if path_is_under "$repo_root" "$workdir_dir"; then
+    return 0
+  fi
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    return 0
+  fi
+  die "configured repo root must be under workdir or match infra_dir: $repo_root"
+}
+
+worktree_source_repo() {
+  local repo_root="$1"
+  local repo_name="$2"
+  local infra_dir="$3"
+  local source_parent
+  local source_repo
+
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    source_parent="{{ robokitty_worktree_source_dir }}"
+    [ ! -L "$source_parent" ] || die "worktree source directory must not be a symlink: $source_parent"
+    [ -d "$source_parent" ] || die "worktree source directory does not exist: $source_parent"
+    source_parent="$(realpath "$source_parent")"
+    source_repo="$source_parent/$repo_name"
+    case "$source_repo" in
+      "$source_parent"/*) ;;
+      *) die "computed worktree source path escapes source directory: $source_repo" ;;
+    esac
+    [ ! -L "$source_repo" ] || die "worktree source repo must not be a symlink: $source_repo"
+    if [ -d "$source_repo" ]; then
+      [ "$(git -C "$source_repo" rev-parse --is-bare-repository)" = "true" ] || \
+        die "worktree source repo is not bare: $source_repo"
+      realpath "$source_repo"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "$repo_root"
+}
+
+delete_branch=false
+force=false
+
+[ "$#" -ge 2 ] || usage
+repo_alias="$1"
+branch="$2"
+shift 2
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --delete-local-branch) delete_branch=true ;;
+    --force) force=true ;;
+    *) usage ;;
+  esac
+  shift
+done
+
+require_cmd git
+require_cmd jq
+require_cmd realpath
+
+config="{{ robokitty_repo_config_file }}"
+[[ "$repo_alias" =~ ^[A-Za-z0-9_-]+$ ]] || die "repo alias must match [A-Za-z0-9_-]+"
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || die "branch must match agent/[A-Za-z0-9._-]+"
+[[ "$branch" != *..* ]] || die "branch must not contain '..'"
+[ -r "$config" ] || die "repo config is not readable: $config"
+
+repo_path="$(jq -er --arg a "$repo_alias" '.repos[$a].path // empty' "$config")" || \
+  die "unknown repo alias: $repo_alias"
+root_dir="$(require_config_dir "configured root" "$(jq -er '.root // empty' "$config")")"
+workdir_dir="$(require_config_dir "configured workdir" "$(jq -er '.workdir // empty' "$config")")"
+infra_path="$(jq -er '.infra_dir // empty' "$config" 2>/dev/null || true)"
+infra_dir=""
+if [ -n "$infra_path" ]; then
+  infra_dir="$(require_config_dir "configured infra_dir" "$infra_path")"
 fi
-if [ "$delete_branch" = "--delete-local-branch" ]; then
-  git branch -D "$branch" || true
+allowed_prefix="$(jq -er '.allowed_branch_prefix // "agent/"' "$config")"
+case "$branch" in
+  "$allowed_prefix"*) ;;
+  *) die "branch must start with $allowed_prefix" ;;
+esac
+
+[ ! -L "$repo_path" ] || die "configured repo path must not be a symlink: $repo_path"
+[ -d "$repo_path" ] || die "configured repo path does not exist: $repo_path"
+git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  die "configured repo path is not a git worktree: $repo_path"
+
+slug="${branch#"$allowed_prefix"}"
+repo_root="$(realpath "$(git -C "$repo_path" rev-parse --show-toplevel)")"
+[ "$(realpath "$repo_path")" = "$repo_root" ] || \
+  die "configured repo path must point at the Git top-level: $repo_path"
+validate_repo_scope "$repo_root" "$root_dir" "$workdir_dir" "$infra_dir"
+repo_parent="$(dirname "$repo_root")"
+repo_name="$(basename "$repo_root")"
+source_repo="$(worktree_source_repo "$repo_root" "$repo_name" "$infra_dir")"
+if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+  repo_parent="$workdir_dir"
+fi
+worktree_path="${repo_parent}/${repo_name}.agent.${slug}"
+
+case "$worktree_path" in
+  "$repo_parent"/*) ;;
+  *) die "computed worktree path escapes repo parent: $worktree_path" ;;
+esac
+path_is_under "$worktree_path" "$root_dir" || \
+  die "computed worktree path is outside configured root: $worktree_path"
+
+if [ -L "$worktree_path" ]; then
+  die "worktree path must not be a symlink: $worktree_path"
+fi
+if [ -e "$worktree_path" ]; then
+  [ -d "$worktree_path" ] || die "worktree path exists and is not a directory: $worktree_path"
+  actual_top="$(git -C "$worktree_path" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$actual_top" ] || die "existing path is not a git worktree: $worktree_path"
+  [ "$(realpath "$worktree_path")" = "$worktree_path" ] || \
+    die "existing worktree path is not canonical: $worktree_path"
+  [ "$(realpath "$actual_top")" = "$worktree_path" ] || \
+    die "existing path resolves to a different worktree: $actual_top"
+  [ "$(git_common_dir "$source_repo")" = "$(git_common_dir "$worktree_path")" ] || \
+    die "existing worktree does not belong to configured repo: $worktree_path"
+  actual_branch="$(git -C "$worktree_path" branch --show-current)"
+  [ "$actual_branch" = "$branch" ] || \
+    die "existing worktree is on $actual_branch, expected $branch"
+  if [ "$force" = false ] && [ -n "$(git -C "$worktree_path" status --porcelain)" ]; then
+    die "worktree has uncommitted changes; rerun with --force to remove it"
+  fi
+  if [ "$force" = true ]; then
+    git -C "$source_repo" worktree remove --force "$worktree_path" >&2
+  else
+    git -C "$source_repo" worktree remove "$worktree_path" >&2
+  fi
+else
+  git -C "$source_repo" worktree prune >&2
+fi
+
+if [ "$delete_branch" = true ] && git -C "$source_repo" show-ref --verify --quiet "refs/heads/${branch}"; then
+  if [ "$force" = true ]; then
+    git -C "$source_repo" branch -D "$branch" >&2
+  else
+    git -C "$source_repo" branch -d "$branch" >&2
+  fi
 fi

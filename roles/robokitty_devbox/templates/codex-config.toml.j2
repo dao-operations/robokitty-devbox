@@ -3,30 +3,35 @@ cli_auth_credentials_store = "{{ robokitty_codex_credentials_store }}"
 forced_login_method = "{{ robokitty_codex_auth_method }}"
 approval_policy = "{{ robokitty_codex_approval_policy }}"
 approvals_reviewer = "{{ robokitty_codex_approvals_reviewer }}"
-default_permissions = "robokitty-devbox"
+default_permissions = "{{ robokitty_codex_permission_profile }}"
+allow_login_shell = {{ robokitty_codex_allow_login_shell | bool | lower }}
+project_root_markers = {{ robokitty_codex_project_root_markers | to_json }}
 
-[permissions.robokitty-devbox]
+[permissions."{{ robokitty_codex_permission_profile }}"]
 description = "Robokitty devbox: workspace write, public internet, denied secret paths."
 extends = ":workspace"
 
-[permissions.robokitty-devbox.workspace_roots]
+[permissions."{{ robokitty_codex_permission_profile }}".workspace_roots]
 "{{ robokitty_workdir }}" = true
 "{{ robokitty_live_dir }}" = true
 "{{ robokitty_infra_dir }}" = true
 
-[permissions.robokitty-devbox.filesystem]
+[permissions."{{ robokitty_codex_permission_profile }}".filesystem]
 ":minimal" = "read"
-"{{ robokitty_root }}" = "write"
+glob_scan_max_depth = {{ robokitty_codex_glob_scan_max_depth | int }}
 "/home/{{ robokitty_bridge_user }}" = "deny"
 "/home/{{ robokitty_git_user }}" = "deny"
 "/root" = "deny"
 "{{ robokitty_config_dir }}" = "deny"
+"{{ robokitty_repo_config_file }}" = "read"
+"{{ robokitty_github_broker_exchange_dir }}" = "write"
+"{{ robokitty_worktree_source_dir }}" = "write"
 "~/.codex/auth.json" = "deny"
 "~/.ssh" = "deny"
 "~/.config/gh" = "deny"
 "~/.gnupg" = "deny"
 
-[permissions.robokitty-devbox.filesystem.":workspace_roots"]
+[permissions."{{ robokitty_codex_permission_profile }}".filesystem.":workspace_roots"]
 "." = "write"
 "**/.env" = "deny"
 "**/.env.*" = "deny"
@@ -34,10 +39,13 @@ extends = ":workspace"
 "**/id_*" = "deny"
 "**/.ssh/**" = "deny"
 
-[permissions.robokitty-devbox.network]
+[permissions."{{ robokitty_codex_permission_profile }}".network]
 enabled = {{ robokitty_codex_enable_network | bool | lower }}
 
-[permissions.robokitty-devbox.network.domains]
+[permissions."{{ robokitty_codex_permission_profile }}".network.domains]
 "*" = "allow"
 "169.254.169.254" = "deny"
 "metadata.google.internal" = "deny"
+
+[permissions."{{ robokitty_codex_permission_profile }}".network.unix_sockets]
+"{{ robokitty_github_broker_socket_path }}" = "allow"

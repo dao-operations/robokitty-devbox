@@ -10,33 +10,408 @@ else
   ok "runner cannot read Takopi config"
 fi
 
-echo "[2] runner cannot read GitHub App private key"
-if sudo -n -u {{ robokitty_runner_user }} test -r /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem; then
-  fail "runner can read GitHub App private key"
+echo "[2] bridge cannot read Codex auth cache"
+if [ -e /home/{{ robokitty_runner_user }}/.codex/auth.json ] && \
+  sudo -n -u {{ robokitty_bridge_user }} test -r /home/{{ robokitty_runner_user }}/.codex/auth.json; then
+  fail "bridge can read Codex auth cache"
 else
-  ok "runner cannot read GitHub App private key"
+  ok "bridge cannot read Codex auth cache"
 fi
 
-echo "[3] runner has no GitHub token in normal shell"
+github_token_file="/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-token"
+
+echo "[3] runner cannot read GitHub PAT"
+if sudo -n -u {{ robokitty_runner_user }} test -r "$github_token_file"; then
+  fail "runner can read GitHub PAT"
+else
+  ok "runner cannot read GitHub PAT"
+fi
+
+echo "[4] bridge cannot read GitHub PAT"
+if sudo -n -u {{ robokitty_bridge_user }} test -r "$github_token_file"; then
+  fail "bridge can read GitHub PAT"
+else
+  ok "bridge cannot read GitHub PAT"
+fi
+
+echo "[5] GitHub PAT file is broker-owned only"
+github_token_stat="$(stat -c '%a %U %G' "$github_token_file")"
+[ "$github_token_stat" = "600 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "GitHub PAT ownership or mode is unsafe: $github_token_stat"
+ok "GitHub PAT file is owned by {{ robokitty_git_user }} with mode 0600"
+
+{% if robokitty_git_commit_signing_enabled | bool %}
+github_signing_key="{{ robokitty_git_signing_key_path }}"
+github_signing_public_key="{{ robokitty_git_signing_key_path }}.pub"
+
+echo "[5a] runner cannot read Git signing private key"
+if sudo -n -u {{ robokitty_runner_user }} test -r "$github_signing_key"; then
+  fail "runner can read Git signing private key"
+else
+  ok "runner cannot read Git signing private key"
+fi
+
+echo "[5b] bridge cannot read Git signing private key"
+if sudo -n -u {{ robokitty_bridge_user }} test -r "$github_signing_key"; then
+  fail "bridge can read Git signing private key"
+else
+  ok "bridge cannot read Git signing private key"
+fi
+
+echo "[5c] Git signing key files are broker-owned"
+github_signing_key_stat="$(stat -c '%a %U %G' "$github_signing_key")"
+[ "$github_signing_key_stat" = "600 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "Git signing private key ownership or mode is unsafe: $github_signing_key_stat"
+github_signing_public_key_stat="$(stat -c '%a %U %G' "$github_signing_public_key")"
+[ "$github_signing_public_key_stat" = "644 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "Git signing public key ownership or mode is unsafe: $github_signing_public_key_stat"
+ok "Git signing key files are broker-owned"
+{% endif %}
+
+echo "[6] GitHub broker exposes no denied P0 surfaces"
+if grep -Eq "sub\\.add_parser\\('(merge|api|workflow|secret|admin)'" {{ robokitty_libdir }}/githubctl.py; then
+  fail "githubctl exposes a denied subcommand"
+fi
+gh_api_count="$(grep -Fc "['gh', 'api'" {{ robokitty_libdir }}/githubctl.py || true)"
+allowed_gh_api_count="$(grep -Fc "['gh', 'api', 'user', '--jq', '.login']" {{ robokitty_libdir }}/githubctl.py || true)"
+[ "$gh_api_count" = "$allowed_gh_api_count" ] || \
+  fail "githubctl contains an unapproved GitHub API operation"
+if grep -Eq "'gh', 'workflow'|'gh', 'secret'|'gh', 'auth'|'gh', 'repo', 'edit'|workflow[[:space:]_-]+dispatch|/(actions|environments|secrets|hooks|collaborators|administration)(/|')" {{ robokitty_libdir }}/githubctl.py; then
+  fail "githubctl contains a denied GitHub operation"
+fi
+ok "GitHub broker exposes only the P0 command surface"
+
+echo "[7] bridge can invoke Codex through constrained wrapper"
+codex_wrapper="{{ robokitty_wrappers_dir }}/codex"
+codex_wrapper_stat="$(stat -c '%a %U %G' "$codex_wrapper")"
+[ "$codex_wrapper_stat" = "755 root root" ] || \
+  fail "Codex wrapper ownership or mode is unsafe: $codex_wrapper_stat"
+if grep -Fq -- '-g {{ robokitty_work_group }}' "$codex_wrapper"; then
+  fail "Codex wrapper must not override {{ robokitty_runner_user }} primary group"
+fi
+grep -Fq 'ALL=({{ robokitty_runner_user }})' /etc/sudoers.d/robokitty-devbox || \
+  fail "sudoers does not constrain bridge to {{ robokitty_runner_user }}"
+if grep -Fq 'ALL=({{ robokitty_runner_user }}:' /etc/sudoers.d/robokitty-devbox; then
+  fail "sudoers must not override {{ robokitty_runner_user }} primary group"
+fi
+if grep -Fq 'ALL=({{ robokitty_git_user }})' /etc/sudoers.d/robokitty-devbox; then
+  fail "sudoers must not let the runner sudo to {{ robokitty_git_user }}"
+fi
+if sudo -n -u {{ robokitty_bridge_user }} env \
+  HOME=/home/{{ robokitty_bridge_user }} \
+  PATH={{ robokitty_wrappers_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/home/{{ robokitty_bridge_user }}/.local/bin \
+  codex --version >/dev/null 2>&1; then
+  ok "bridge can invoke Codex wrapper"
+else
+  fail "bridge cannot invoke Codex wrapper"
+fi
+
+echo "[7a] runner can start bubblewrap sandbox"
+if sudo -n -u {{ robokitty_runner_user }} bwrap --ro-bind / / /usr/bin/true >/dev/null 2>&1; then
+  ok "runner can start bubblewrap sandbox"
+else
+  fail "runner cannot start bubblewrap sandbox"
+fi
+
+echo "[7b] runner can write the managed worktree parent"
+if sudo -n -u {{ robokitty_runner_user }} test -w {{ robokitty_workdir }}; then
+  ok "runner can write the managed worktree parent"
+else
+  fail "runner cannot write {{ robokitty_workdir }}"
+fi
+
+echo "[7c] runner keeps Podman-compatible primary group"
+if [ "$(sudo -n -u {{ robokitty_runner_user }} id -gn)" = "{{ robokitty_runner_user }}" ]; then
+  ok "runner primary group is {{ robokitty_runner_user }}"
+else
+  fail "runner primary group is not {{ robokitty_runner_user }}"
+fi
+
+echo "[7d] runner has work group membership"
+if sudo -n -u {{ robokitty_runner_user }} id -nG | tr ' ' '\n' | grep -Fxq {{ robokitty_work_group | quote }}; then
+  ok "runner has {{ robokitty_work_group }} group membership"
+else
+  fail "runner does not have {{ robokitty_work_group }} group membership"
+fi
+if id -nG {{ robokitty_git_user }} | tr ' ' '\n' | grep -Fxq {{ robokitty_work_group | quote }}; then
+  fail "{{ robokitty_git_user }} must not keep {{ robokitty_work_group }} supplementary membership"
+else
+  ok "{{ robokitty_git_user }} is not in {{ robokitty_work_group }}"
+fi
+
+echo "[7e] GitHub broker daemon is available through constrained socket"
+systemctl is-enabled {{ robokitty_github_broker_service_name }} >/dev/null || \
+  fail "{{ robokitty_github_broker_service_name }} is not enabled"
+systemctl is-active {{ robokitty_github_broker_service_name }} >/dev/null || \
+  fail "{{ robokitty_github_broker_service_name }} is not active"
+[ -S {{ robokitty_github_broker_socket_path }} ] || \
+  fail "githubctl broker socket is missing"
+broker_socket_stat="$(stat -c '%a %U %G' {{ robokitty_github_broker_socket_path }})"
+[ "$broker_socket_stat" = "660 {{ robokitty_git_user }} {{ robokitty_github_broker_handoff_group }}" ] || \
+  fail "githubctl broker socket ownership or mode is unsafe: $broker_socket_stat"
+broker_exchange_stat="$(stat -c '%a %U %G' {{ robokitty_github_broker_exchange_dir }})"
+[ "$broker_exchange_stat" = "2770 {{ robokitty_runner_user }} {{ robokitty_github_broker_handoff_group }}" ] || \
+  fail "githubctl broker exchange directory ownership or mode is unsafe: $broker_exchange_stat"
+state_dir_stat="$(stat -c '%a %U %G' {{ robokitty_state_dir }})"
+[ "$state_dir_stat" = "750 root {{ robokitty_github_broker_handoff_group }}" ] || \
+  fail "state directory ownership or mode is unsafe for broker handoff: $state_dir_stat"
+[ ! -L {{ robokitty_github_broker_exchange_dir }} ] || \
+  fail "githubctl broker exchange directory must not be a symlink"
+worktree_source_stat="$(stat -c '%a %U %G' {{ robokitty_worktree_source_dir }})"
+[ "$worktree_source_stat" = "2775 {{ robokitty_runner_user }} {{ robokitty_work_group }}" ] || \
+  fail "worktree source directory ownership or mode is unsafe: $worktree_source_stat"
+[ ! -L {{ robokitty_worktree_source_dir }} ] || \
+  fail "worktree source directory must not be a symlink"
+if sudo -n -u {{ robokitty_runner_user }} test -w {{ robokitty_worktree_source_dir }}; then
+  ok "runner can write worktree source directory"
+else
+  fail "runner cannot write worktree source directory"
+fi
+if sudo -n -u {{ robokitty_runner_user }} test -w {{ robokitty_github_broker_exchange_dir }}; then
+  ok "runner can write githubctl broker exchange directory"
+else
+  fail "runner cannot write githubctl broker exchange directory"
+fi
+sudo -n -u {{ robokitty_runner_user }} \
+  grep -Fq '"{{ robokitty_github_broker_exchange_dir }}" = "write"' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml || \
+  fail "Codex config does not grant exact write access to githubctl broker exchange directory"
+sudo -n -u {{ robokitty_runner_user }} \
+  grep -Fq '"{{ robokitty_worktree_source_dir }}" = "write"' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml || \
+  fail "Codex config does not grant exact write access to worktree source directory"
+grep -Fq {{ robokitty_github_broker_exchange_dir | quote }} /etc/systemd/system/takopi.service || \
+  fail "Takopi service cannot write githubctl broker exchange directory"
+grep -Fq {{ robokitty_worktree_source_dir | quote }} /etc/systemd/system/takopi.service || \
+  fail "Takopi service cannot write worktree source directory"
+legacy_broker_exchange_dir="{{ robokitty_workdir }}/.githubctl-exchange"
+if [ {{ robokitty_github_broker_exchange_dir | quote }} != "$legacy_broker_exchange_dir" ] && \
+   [ -e "$legacy_broker_exchange_dir" ]; then
+  fail "legacy githubctl broker exchange directory remains under workdir: $legacy_broker_exchange_dir"
+fi
+ok "GitHub broker daemon exposes only the group-owned githubctl socket"
+
+echo "[7f] rootless Podman storage and AppArmor config is present"
+podman_storage_conf="/home/{{ robokitty_runner_user }}/.config/containers/storage.conf"
+[ -r "$podman_storage_conf" ] || fail "rootless Podman storage config is missing"
+grep -Eq '^\[storage[.]options[.]overlay\]$' "$podman_storage_conf" || \
+  fail "rootless Podman storage config does not configure overlay options"
+grep -Eq '^mount_program = "/usr/bin/fuse-overlayfs"$' "$podman_storage_conf" || \
+  fail "rootless Podman storage config does not force fuse-overlayfs"
+if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+{% for binary in robokitty_podman_apparmor_binaries %}
+  if ! awk -v profile={{ binary.path | quote }} \
+    '$1 == profile { found = 1 } END { exit found ? 0 : 1 }' \
+    /sys/kernel/security/apparmor/profiles; then
+    fail "AppArmor profile for {{ binary.path }} is not loaded"
+  fi
+{% endfor %}
+fi
+ok "rootless Podman storage and AppArmor config is present"
+
+echo "[8] runner has no GitHub token in normal shell"
 if sudo -n -u {{ robokitty_runner_user }} env | grep -E '^(GH_TOKEN|GITHUB_TOKEN)='; then
   fail "runner shell has GitHub token"
 else
   ok "runner shell has no GitHub token"
 fi
 
-echo "[4] runner has no Telegram token in normal shell"
+echo "[9] runner has no Telegram token in normal shell"
 if sudo -n -u {{ robokitty_runner_user }} env | grep -Ei '(TELEGRAM|BOT_TOKEN)'; then
   fail "runner shell has Telegram token-like env"
 else
   ok "runner shell has no Telegram token env"
 fi
 
-echo "[5] secret file modes"
+echo "[10] runner has no OpenAI API key in normal shell"
+if sudo -n -u {{ robokitty_runner_user }} env | grep -E '^(OPENAI_API_KEY|CODEX_API_KEY)='; then
+  fail "runner shell has OpenAI API-key auth material"
+else
+  ok "runner shell has no OpenAI API key env"
+fi
+
+echo "[11] Codex config enforces ChatGPT login and Auto-review"
+[ -r {{ robokitty_codex_system_config_file }} ] || fail "Codex system config is missing"
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^forced_login_method = "chatgpt"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not force ChatGPT login"
+fi
+if ! grep -Eq '^forced_login_method = "chatgpt"$' {{ robokitty_codex_system_config_file }}; then
+  fail "Codex system config does not force ChatGPT login"
+fi
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^approvals_reviewer = "auto_review"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not use Auto-review"
+fi
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^project_root_markers = \[\]$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not disable upward project-root discovery"
+fi
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"{{ robokitty_repo_config_file }}" = "read"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not allow read access to repo routing config"
+fi
+if sudo -n -u {{ robokitty_runner_user }} test -r {{ robokitty_repo_config_file }}; then
+  ok "runner can read repo routing config"
+else
+  fail "runner cannot read repo routing config"
+fi
+[ ! -e {{ robokitty_config_dir }}/repos.json ] || \
+  fail "legacy repo routing config remains under denied etc path"
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"{{ robokitty_github_broker_socket_path }}" = "allow"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not allow the githubctl broker Unix socket"
+fi
+legacy_rules_file="{{ robokitty_codex_requirements_dir }}/rules/robokitty-githubctl.rules"
+[ ! -e "$legacy_rules_file" ] || fail "legacy githubctl Codex exec rule must be removed"
+[ -r {{ robokitty_codex_requirements_file }} ] || fail "Codex requirements file is missing"
+requirements_stat="$(stat -c '%a %U %G' {{ robokitty_codex_requirements_file }})"
+[ "$requirements_stat" = "644 root root" ] || fail "Codex requirements ownership or mode is unsafe: $requirements_stat"
+if grep -Eq 'decision[[:space:]]*=[[:space:]]*"allow"' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements must not contain allow rules"
+fi
+if ! grep -Eq '^allowed_approval_policies = \["on-request"\]$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not restrict approval policy to on-request"
+fi
+if ! grep -Eq '^allowed_approvals_reviewers = \["auto_review"\]$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not restrict approvals reviewer to Auto-review"
+fi
+if ! grep -Eq '^allowed_sandbox_modes = \["read-only", "workspace-write"\]$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not restrict legacy sandbox modes"
+fi
+if ! grep -Eq '^default_permissions = "{{ robokitty_codex_permission_profile }}"$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not select the Robokitty permission profile"
+fi
+if ! grep -Eq '^\[allowed_permission_profiles\]$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not define a permission profile allowlist"
+fi
+if ! grep -Eq '^":read-only" = true$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not allow the read-only profile"
+fi
+if ! grep -Eq '^"{{ robokitty_codex_permission_profile }}" = true$' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements do not allow the Robokitty permission profile"
+fi
+if grep -Eq '^\[permissions[.]' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements must not define permission profiles"
+fi
+if sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  'danger-full-access' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex user config references danger-full-access"
+fi
+if grep -Eq 'danger-full-access' {{ robokitty_codex_system_config_file }}; then
+  fail "Codex system config references danger-full-access"
+fi
+if grep -Eq 'danger-full-access' {{ robokitty_codex_requirements_file }}; then
+  fail "Codex requirements reference danger-full-access"
+fi
+if grep -Eq '^"{{ robokitty_root }}" = "write"$' {{ robokitty_codex_system_config_file }} || \
+  sudo -n -u {{ robokitty_runner_user }} grep -Eq '^"{{ robokitty_root }}" = "write"$' /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config grants broad write access to {{ robokitty_root }}"
+fi
+ok "Codex config and requirements use ChatGPT login, Auto-review, and no danger-full-access"
+
+echo "[12] secret file modes"
 for f in \
   /home/{{ robokitty_bridge_user }}/.takopi/takopi.toml \
-  /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem \
+  "$github_token_file" \
+{% if robokitty_git_commit_signing_enabled | bool %}
+  "$github_signing_key" \
+{% endif %}
   /home/{{ robokitty_runner_user }}/.codex/auth.json; do
   [ -e "$f" ] && stat -c '%a %U %G %n' "$f" || true
 done
 
+echo "[13] githubctl audit trail is broker-readable only"
+audit_output="$(sudo -n -u {{ robokitty_runner_user }} githubctl audit --limit 1 --format json)" || \
+  fail "githubctl audit command failed"
+if ! grep -q '"ok": true' <<<"$audit_output"; then
+  fail "githubctl audit did not return ok"
+fi
+audit_home="/home/{{ robokitty_git_user }}"
+audit_cache="/home/{{ robokitty_git_user }}/.cache"
+audit_dir="/home/{{ robokitty_git_user }}/.cache/robokitty-devbox"
+[ ! -L "$audit_home" ] || fail "githubctl audit home must not be a symlink"
+[ -d "$audit_home" ] || fail "githubctl audit home is missing"
+audit_home_stat="$(stat -c '%a %U %G' "$audit_home")"
+[ "$audit_home_stat" = "700 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "githubctl audit home ownership or mode is unsafe: $audit_home_stat"
+[ ! -L "$audit_cache" ] || fail "githubctl audit cache directory must not be a symlink"
+[ -d "$audit_cache" ] || fail "githubctl audit cache directory is missing"
+audit_cache_stat="$(stat -c '%a %U %G' "$audit_cache")"
+[ "$audit_cache_stat" = "700 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "githubctl audit cache directory ownership or mode is unsafe: $audit_cache_stat"
+[ ! -L "$audit_dir" ] || fail "githubctl audit directory must not be a symlink"
+[ -d "$audit_dir" ] || fail "githubctl audit directory is missing"
+audit_dir_stat="$(stat -c '%a %U %G' "$audit_dir")"
+[ "$audit_dir_stat" = "700 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "githubctl audit directory ownership or mode is unsafe: $audit_dir_stat"
+audit_log="/home/{{ robokitty_git_user }}/.cache/robokitty-devbox/githubctl-audit.jsonl"
+audit_stat="$(stat -c '%a %U %G' "$audit_log")"
+[ "$audit_stat" = "600 {{ robokitty_git_user }} {{ robokitty_git_user }}" ] || \
+  fail "githubctl audit log ownership or mode is unsafe: $audit_stat"
+if sudo -n -u {{ robokitty_runner_user }} test -r "$audit_log"; then
+  fail "runner can read githubctl audit log directly"
+else
+  ok "runner cannot read githubctl audit log directly"
+fi
+ok "githubctl audit trail is readable through githubctl"
+
+{% if robokitty_enable_proc_hardening | bool %}
+echo "[13a] managed services hide cross-user process lists"
+proc_hardened_units=(takopi {{ robokitty_github_broker_service_name | quote }})
+{% if robokitty_cloudflared_manage_service | bool %}
+proc_hardened_units+=({{ robokitty_cloudflared_service_name | quote }})
+{% endif %}
+for unit in "${proc_hardened_units[@]}"; do
+  unit_file="/etc/systemd/system/${unit}.service"
+  [ -f "$unit_file" ] || fail "managed service unit is missing: $unit_file"
+  grep -Fxq 'ProtectProc=invisible' "$unit_file" || \
+    fail "$unit does not hide cross-user process lists"
+done
+ok "managed service units use ProtectProc=invisible"
+
+{% endif %}
+{% if robokitty_cloudflare_access_enabled | bool %}
+echo "[14] Cloudflare access mode is locked down"
+command -v cloudflared >/dev/null 2>&1 || fail "cloudflared is missing"
+systemctl is-enabled {{ robokitty_cloudflared_service_name }} >/dev/null || \
+  fail "{{ robokitty_cloudflared_service_name }} is not enabled"
+systemctl is-active {{ robokitty_cloudflared_service_name }} >/dev/null || \
+  fail "{{ robokitty_cloudflared_service_name }} is not active"
+cloudflared_token_stat="$(stat -c '%a %U %G' {{ robokitty_cloudflared_token_file }})"
+[ "$cloudflared_token_stat" = "640 root {{ robokitty_cloudflared_group }}" ] || \
+  fail "cloudflared token ownership or mode is unsafe: $cloudflared_token_stat"
+if sudo -n -u {{ robokitty_runner_user }} test -r {{ robokitty_cloudflared_token_file }}; then
+  fail "runner can read cloudflared tunnel token"
+fi
+if sudo -n -u {{ robokitty_bridge_user }} test -r {{ robokitty_cloudflared_token_file }}; then
+  fail "bridge can read cloudflared tunnel token"
+fi
+if pgrep -af '^/usr/bin/cloudflared ' | grep -Eq -- '--token(=| )'; then
+  fail "cloudflared token appears in process command line"
+fi
+if ufw status | grep -Eiq '22/tcp[[:space:]]+ALLOW[[:space:]]+IN'; then
+  fail "UFW still allows inbound SSH"
+fi
+sshd_effective="$(/usr/sbin/sshd -T)"
+grep -Eq '^passwordauthentication no$' <<<"$sshd_effective" || fail "SSHD allows password authentication"
+grep -Eq '^kbdinteractiveauthentication no$' <<<"$sshd_effective" || fail "SSHD allows keyboard-interactive authentication"
+grep -Eq '^permitemptypasswords no$' <<<"$sshd_effective" || fail "SSHD allows empty passwords"
+grep -Eq '^pubkeyauthentication yes$' <<<"$sshd_effective" || fail "SSHD does not allow public key auth"
+grep -Eq '^permitrootlogin (prohibit-password|without-password)$' <<<"$sshd_effective" || fail "SSHD root login mode is not prohibit-password"
+grep -Eq '^x11forwarding no$' <<<"$sshd_effective" || fail "SSHD allows X11 forwarding"
+grep -Eq '^allowtcpforwarding no$' <<<"$sshd_effective" || fail "SSHD allows TCP forwarding"
+grep -Eq '^permittunnel no$' <<<"$sshd_effective" || fail "SSHD allows tunnel devices"
+listen_count="$(grep -Ec '^listenaddress ' <<<"$sshd_effective")"
+[ "$listen_count" = "1" ] || fail "SSHD has unexpected ListenAddress count: $listen_count"
+grep -Eq '^listenaddress 127[.]0[.]0[.]1:' <<<"$sshd_effective" || fail "SSHD is not restricted to 127.0.0.1"
+ok "Cloudflare access mode has no public SSH path and protects the tunnel token"
+
+{% endif %}
 echo "Security check complete"

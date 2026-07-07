@@ -1,23 +1,212 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
-usage() { echo "usage: robokitty-new-worktree <repo-alias> agent/<slug> [base-branch]" >&2; exit 2; }
-[ "$#" -ge 2 ] || usage
-alias="$1"; branch="$2"; base="${3:-}"
-[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || { echo "branch must match agent/[A-Za-z0-9._-]+" >&2; exit 2; }
-config="{{ robokitty_config_dir }}/repos.json"
-repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
-default_base="$(jq -r --arg a "$alias" '.repos[$a].default_branch // "main"' "$config")"
-[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
-[ -n "$base" ] || base="$default_base"
-slug="${branch#agent/}"
-worktree_path="$(dirname "$repo_path")/$(basename "$repo_path").agent.$slug"
+usage() {
+  echo "usage: robokitty-new-worktree <repo-alias> agent/<slug> [base-branch]" >&2
+  exit 2
+}
 
-cd "$repo_path"
-git fetch origin "$base"
-if [ -d "$worktree_path" ]; then
+die() {
+  echo "robokitty-new-worktree: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+valid_ref_name() {
+  local ref="$1"
+  [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+  [[ "$ref" != /* && "$ref" != */ && "$ref" != *..* && "$ref" != *@\{* ]]
+}
+
+git_common_dir() {
+  local repo="$1"
+  local path
+  path="$(git -C "$repo" rev-parse --git-common-dir)"
+  case "$path" in
+    /*) ;;
+    *) path="$repo/$path" ;;
+  esac
+  realpath "$path"
+}
+
+require_config_dir() {
+  local label="$1"
+  local path="$2"
+  [ -n "$path" ] || die "$label is empty"
+  [ ! -L "$path" ] || die "$label must not be a symlink: $path"
+  [ -d "$path" ] || die "$label does not exist: $path"
+  realpath "$path"
+}
+
+path_is_under() {
+  local path="$1"
+  local parent="$2"
+  case "$path" in
+    "$parent"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_repo_scope() {
+  local repo_root="$1"
+  local root_dir="$2"
+  local workdir_dir="$3"
+  local infra_dir="$4"
+
+  path_is_under "$repo_root" "$root_dir" || \
+    die "configured repo root is outside configured root: $repo_root"
+  if path_is_under "$repo_root" "$workdir_dir"; then
+    return 0
+  fi
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    return 0
+  fi
+  die "configured repo root must be under workdir or match infra_dir: $repo_root"
+}
+
+worktree_source_repo() {
+  local repo_root="$1"
+  local repo_name="$2"
+  local infra_dir="$3"
+  local source_parent
+  local source_repo
+  local origin_url
+
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    source_parent="{{ robokitty_worktree_source_dir }}"
+    [ ! -L "$source_parent" ] || die "worktree source directory must not be a symlink: $source_parent"
+    [ -d "$source_parent" ] || die "worktree source directory does not exist: $source_parent"
+    source_parent="$(realpath "$source_parent")"
+    source_repo="$source_parent/$repo_name"
+    case "$source_repo" in
+      "$source_parent"/*) ;;
+      *) die "computed worktree source path escapes source directory: $source_repo" ;;
+    esac
+    [ ! -L "$source_repo" ] || die "worktree source repo must not be a symlink: $source_repo"
+    if [ ! -e "$source_repo" ]; then
+      git clone --bare "$repo_root" "$source_repo" >&2
+    fi
+    [ -d "$source_repo" ] || die "worktree source repo is not a directory: $source_repo"
+    [ "$(git -C "$source_repo" rev-parse --is-bare-repository)" = "true" ] || \
+      die "worktree source repo is not bare: $source_repo"
+    origin_url="$(git -C "$repo_root" remote get-url origin 2>/dev/null || true)"
+    if [ -n "$origin_url" ]; then
+      if git -C "$source_repo" remote get-url origin >/dev/null 2>&1; then
+        git -C "$source_repo" remote set-url origin "$origin_url" >&2
+      else
+        git -C "$source_repo" remote add origin "$origin_url" >&2
+      fi
+    fi
+    realpath "$source_repo"
+    return 0
+  fi
+
+  printf '%s\n' "$repo_root"
+}
+
+validate_existing_worktree() {
+  local source_repo="$1"
+  local worktree_path="$2"
+  local branch="$3"
+  local actual_branch
+  local actual_top
+
+  [ ! -L "$worktree_path" ] || die "worktree path must not be a symlink: $worktree_path"
+  actual_top="$(git -C "$worktree_path" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$actual_top" ] || die "existing path is not a git worktree: $worktree_path"
+  [ "$(realpath "$worktree_path")" = "$worktree_path" ] || \
+    die "existing worktree path is not canonical: $worktree_path"
+  [ "$(realpath "$actual_top")" = "$worktree_path" ] || \
+    die "existing path resolves to a different worktree: $actual_top"
+  [ "$(git_common_dir "$source_repo")" = "$(git_common_dir "$worktree_path")" ] || \
+    die "existing worktree does not belong to configured repo: $worktree_path"
+  actual_branch="$(git -C "$worktree_path" branch --show-current)"
+  [ "$actual_branch" = "$branch" ] || \
+    die "existing worktree is on $actual_branch, expected $branch"
+}
+
+[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
+require_cmd git
+require_cmd jq
+require_cmd realpath
+
+repo_alias="$1"
+branch="$2"
+base="${3:-}"
+config="{{ robokitty_repo_config_file }}"
+
+[[ "$repo_alias" =~ ^[A-Za-z0-9_-]+$ ]] || die "repo alias must match [A-Za-z0-9_-]+"
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || die "branch must match agent/[A-Za-z0-9._-]+"
+[[ "$branch" != *..* ]] || die "branch must not contain '..'"
+[ -r "$config" ] || die "repo config is not readable: $config"
+
+repo_path="$(jq -er --arg a "$repo_alias" '.repos[$a].path // empty' "$config")" || \
+  die "unknown repo alias: $repo_alias"
+root_dir="$(require_config_dir "configured root" "$(jq -er '.root // empty' "$config")")"
+workdir_dir="$(require_config_dir "configured workdir" "$(jq -er '.workdir // empty' "$config")")"
+infra_path="$(jq -er '.infra_dir // empty' "$config" 2>/dev/null || true)"
+infra_dir=""
+if [ -n "$infra_path" ]; then
+  infra_dir="$(require_config_dir "configured infra_dir" "$infra_path")"
+fi
+default_base="$(jq -er --arg a "$repo_alias" '.repos[$a].default_branch // "main"' "$config")"
+allowed_prefix="$(jq -er '.allowed_branch_prefix // "agent/"' "$config")"
+case "$branch" in
+  "$allowed_prefix"*) ;;
+  *) die "branch must start with $allowed_prefix" ;;
+esac
+
+[ -n "$base" ] || base="$default_base"
+valid_ref_name "$base" || die "base branch is not a safe ref name: $base"
+jq -e --arg a "$repo_alias" --arg b "$base" \
+  '(.repos[$a].allowed_base_branches // [.repos[$a].default_branch // "main"]) | index($b)' \
+  "$config" >/dev/null || die "base branch is not allowed for $repo_alias: $base"
+
+[ ! -L "$repo_path" ] || die "configured repo path must not be a symlink: $repo_path"
+[ -d "$repo_path" ] || die "configured repo path does not exist: $repo_path"
+git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  die "configured repo path is not a git worktree: $repo_path"
+
+slug="${branch#"$allowed_prefix"}"
+repo_root="$(realpath "$(git -C "$repo_path" rev-parse --show-toplevel)")"
+[ "$(realpath "$repo_path")" = "$repo_root" ] || \
+  die "configured repo path must point at the Git top-level: $repo_path"
+validate_repo_scope "$repo_root" "$root_dir" "$workdir_dir" "$infra_dir"
+repo_parent="$(dirname "$repo_root")"
+repo_name="$(basename "$repo_root")"
+source_repo="$(worktree_source_repo "$repo_root" "$repo_name" "$infra_dir")"
+if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+  repo_parent="$workdir_dir"
+fi
+worktree_path="${repo_parent}/${repo_name}.agent.${slug}"
+
+case "$worktree_path" in
+  "$repo_parent"/*) ;;
+  *) die "computed worktree path escapes repo parent: $worktree_path" ;;
+esac
+path_is_under "$worktree_path" "$root_dir" || \
+  die "computed worktree path is outside configured root: $worktree_path"
+
+if [ -L "$worktree_path" ]; then
+  die "worktree path must not be a symlink: $worktree_path"
+fi
+if [ -e "$worktree_path" ]; then
+  [ -d "$worktree_path" ] || die "worktree path exists and is not a directory: $worktree_path"
+  validate_existing_worktree "$source_repo" "$worktree_path" "$branch"
   echo "$worktree_path"
   exit 0
 fi
-git worktree add "$worktree_path" -b "$branch" "origin/$base"
+
+git -C "$source_repo" fetch --no-tags origin "refs/heads/${base}:refs/remotes/origin/${base}" >&2
+
+if git -C "$source_repo" show-ref --verify --quiet "refs/heads/${branch}"; then
+  git -C "$source_repo" worktree add "$worktree_path" "$branch" >&2
+else
+  git -C "$source_repo" worktree add -b "$branch" "$worktree_path" "origin/$base" >&2
+fi
+
+validate_existing_worktree "$source_repo" "$worktree_path" "$branch"
 echo "$worktree_path"

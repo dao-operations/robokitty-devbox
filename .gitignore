@@ -2,8 +2,13 @@
 *.retry
 .vault-pass
 .ansible/
-vault*.yml
-!vault.yml.example
+*.decrypted.yml
+*.plaintext.yml
+*.plain.yml
+*.tmp.yml
+docs/cloud-init/*.generated.yml
+docs/cloud-init/*.rendered.yml
+docs/cloud-init/*.secret.yml
 
 # Python
 __pycache__/

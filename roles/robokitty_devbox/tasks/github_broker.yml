@@ -2,41 +2,96 @@
 - name: Render repo allowlist config
   ansible.builtin.template:
     src: repo-config.json.j2
-    dest: "{{ robokitty_config_dir }}/repos.json"
+    dest: "{{ robokitty_repo_config_file }}"
     owner: root
     group: root
     mode: "0644"
 
-- name: Render GitHub App config
-  ansible.builtin.copy:
-    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.toml"
-    owner: "{{ robokitty_git_user }}"
-    group: "{{ robokitty_git_user }}"
-    mode: "0600"
-    content: |
-      app_id = "{{ robokitty_github_app_id }}"
-      default_installation_id = "{{ robokitty_github_app_installation_id }}"
-      private_key_path = "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+- name: Remove legacy repo allowlist config from denied etc path
+  ansible.builtin.file:
+    path: "{{ robokitty_config_dir }}/repos.json"
+    state: absent
 
-- name: Copy GitHub App private key from local path
+- name: Remove legacy GitHub auth config
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-auth.toml"
+    state: absent
+
+- name: Copy GitHub token from local path
   ansible.builtin.copy:
-    src: "{{ robokitty_github_app_private_key_src }}"
-    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+    src: "{{ robokitty_github_token_src }}"
+    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-token"
     owner: "{{ robokitty_git_user }}"
     group: "{{ robokitty_git_user }}"
     mode: "0600"
   no_log: true
-  when: robokitty_github_app_private_key_src | length > 0
+  when: robokitty_github_token_src | length > 0
 
-- name: Write GitHub App private key from vault variable
+- name: Write GitHub token from vault variable
   ansible.builtin.copy:
-    content: "{{ robokitty_github_app_private_key_pem }}"
-    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem"
+    content: "{{ robokitty_github_token }}"
+    dest: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-token"
     owner: "{{ robokitty_git_user }}"
     group: "{{ robokitty_git_user }}"
     mode: "0600"
   no_log: true
-  when: robokitty_github_app_private_key_pem | length > 0
+  when: robokitty_github_token | length > 0
+
+- name: Ensure GitHub broker SSH directory exists
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_git_user }}/.ssh"
+    state: directory
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0700"
+  when: robokitty_git_commit_signing_enabled | bool
+
+- name: Copy Git signing private key from local path
+  ansible.builtin.copy:
+    src: "{{ robokitty_git_signing_private_key_src }}"
+    dest: "{{ robokitty_git_signing_key_path }}"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - robokitty_git_commit_signing_enabled | bool
+    - robokitty_git_signing_private_key_src | length > 0
+
+- name: Write Git signing private key from vault variable
+  ansible.builtin.copy:
+    content: "{{ robokitty_git_signing_private_key_pem }}"
+    dest: "{{ robokitty_git_signing_key_path }}"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0600"
+  no_log: true
+  when:
+    - robokitty_git_commit_signing_enabled | bool
+    - robokitty_git_signing_private_key_pem | length > 0
+
+- name: Write Git signing public key
+  ansible.builtin.copy:
+    content: "{{ robokitty_git_signing_public_key | trim }}\n"
+    dest: "{{ robokitty_git_signing_key_path }}.pub"
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0644"
+  when: robokitty_git_commit_signing_enabled | bool
+
+- name: Remove legacy GitHub broker exchange directory from work parent
+  ansible.builtin.file:
+    path: "{{ robokitty_workdir }}/.githubctl-exchange"
+    state: absent
+  when: robokitty_github_broker_exchange_dir != robokitty_workdir ~ '/.githubctl-exchange'
+
+- name: Ensure GitHub broker exchange directory exists
+  ansible.builtin.file:
+    path: "{{ robokitty_github_broker_exchange_dir }}"
+    state: directory
+    owner: "{{ robokitty_runner_user }}"
+    group: "{{ robokitty_github_broker_handoff_group }}"
+    mode: "2770"
 
 - name: Install GitHub broker scripts
   ansible.builtin.template:
@@ -46,9 +101,35 @@
     group: root
     mode: "{{ item.mode }}"
   loop:
-    - { src: githubctl.py.j2, dest: "{{ robokitty_libdir }}/githubctl.py", mode: "0755" }
-    - { src: github-app-token.py.j2, dest: "{{ robokitty_libdir }}/github-app-token.py", mode: "0755" }
-    - { src: github-git-askpass.sh.j2, dest: "{{ robokitty_libdir }}/github-git-askpass.sh", mode: "0755" }
+    - src: githubctl.py.j2
+      dest: "{{ robokitty_libdir }}/githubctl.py"
+      mode: "0755"
+    - src: githubctl-prep.py.j2
+      dest: "{{ robokitty_libdir }}/githubctl-prep.py"
+      mode: "0755"
+    - src: githubctl-brokerd.py.j2
+      dest: "{{ robokitty_libdir }}/githubctl-brokerd.py"
+      mode: "0755"
+    - src: github-git-askpass.sh.j2
+      dest: "{{ robokitty_libdir }}/github-git-askpass.sh"
+      mode: "0755"
+  notify: Restart robokitty-github-broker
+
+- name: Install GitHub broker daemon unit
+  ansible.builtin.template:
+    src: githubctl-broker.service.j2
+    dest: "/etc/systemd/system/{{ robokitty_github_broker_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart robokitty-github-broker
+
+- name: Apply GitHub broker unit changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: not ansible_check_mode
 
 - name: Install githubctl wrapper
   ansible.builtin.copy:
@@ -57,6 +138,13 @@
     group: root
     mode: "0755"
     content: |
-      #!/usr/bin/env bash
+      #!/bin/bash
       set -euo pipefail
-      exec sudo -H -n -u {{ robokitty_git_user }} -- {{ robokitty_libdir }}/githubctl.py "$@"
+      exec {{ (robokitty_libdir ~ '/githubctl-prep.py') | quote }} "$@"
+
+- name: Enable/start GitHub broker daemon
+  ansible.builtin.service:
+    name: "{{ robokitty_github_broker_service_name }}"
+    enabled: true
+    state: started
+  when: not ansible_check_mode

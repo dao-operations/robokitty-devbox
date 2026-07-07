@@ -2,7 +2,9 @@
 """Restricted GitHub broker for Robokitty.
 
 This is intentionally small. It is not a `gh` passthrough.
-Runs as agent-git via sudo from the Codex runner user.
+Runs as agent-git behind a root-managed Unix socket broker. The runner never
+receives a persistent GitHub token; this broker reads the third identity PAT
+only inside short-lived git/gh subprocess environments.
 """
 from __future__ import annotations
 
@@ -11,19 +13,168 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
-import sys
 import tempfile
+import time
+from collections import deque
 from pathlib import Path
 
-CONFIG = Path('{{ robokitty_config_dir }}/repos.json')
-TOKEN_HELPER = Path('{{ robokitty_libdir }}/github-app-token.py')
+CONFIG = Path('{{ robokitty_repo_config_file }}')
+TOKEN_FILE = Path('/home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-token')
+SIGN_COMMITS = {{ robokitty_git_commit_signing_enabled | bool | ternary('True', 'False') }}
+SIGNING_KEY = Path('{{ robokitty_git_signing_key_path }}')
+SIGNING_PUBLIC_KEY = Path('{{ robokitty_git_signing_key_path }}.pub')
 ASKPASS = Path('{{ robokitty_libdir }}/github-git-askpass.sh')
-BRANCH_RE = re.compile(r'^agent/[A-Za-z0-9._-]+$')
+AUDIT_HOME = Path('/home/{{ robokitty_git_user }}')
+AUDIT_CACHE_DIR = AUDIT_HOME / '.cache'
+AUDIT_DIR = AUDIT_CACHE_DIR / 'robokitty-devbox'
+AUDIT_LOG = AUDIT_DIR / 'githubctl-audit.jsonl'
+BODY_FILE_MAX_BYTES = 256 * 1024
+PATCH_FILE_MAX_BYTES = 50 * 1024 * 1024
+BRANCH_SUFFIX_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+SECRET_SUFFIXES = {'.key', '.pem', '.p12', '.pfx'}
+PREPARED_FILE_PARENT = Path('{{ robokitty_github_broker_exchange_dir }}')
+PREPARED_FILE_PREFIX = str(PREPARED_FILE_PARENT / 'robokitty-submit.')
+
+class AuditError(RuntimeError):
+    pass
 
 
-def eprint(*args):
-    print(*args, file=sys.stderr)
+def open_dir_child(parent_fd: int, name: str, label: str) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_DIRECTORY'):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        return os.open(name, flags, dir_fd=parent_fd)
+    except OSError as ex:
+        raise AuditError(f'{label} is unsafe: {ex}') from ex
+
+
+def validate_dir_fd(fd: int, label: str, *, owner_uid: int | None = None, mode: int | None = None) -> None:
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode):
+        raise AuditError(f'{label} is not a directory')
+    if owner_uid is not None and st.st_uid != owner_uid:
+        raise AuditError(f'{label} owner is unsafe')
+    if mode is not None and stat.S_IMODE(st.st_mode) != mode:
+        raise AuditError(f'{label} permissions must be {mode:04o}')
+
+
+def open_audit_dir(*, create: bool) -> int:
+    uid = os.geteuid()
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_DIRECTORY'):
+        flags |= os.O_DIRECTORY
+    current_fd = os.open('/', flags)
+    current_path = Path('/')
+    try:
+        for part in AUDIT_DIR.parts[1:]:
+            current_path = current_path / part
+            if create and current_path in {AUDIT_CACHE_DIR, AUDIT_DIR}:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            next_fd = open_dir_child(current_fd, part, f'audit path component {current_path}')
+            if current_path == AUDIT_HOME:
+                validate_dir_fd(next_fd, str(current_path), owner_uid=uid, mode=0o700)
+            elif current_path in {AUDIT_CACHE_DIR, AUDIT_DIR}:
+                validate_dir_fd(next_fd, str(current_path), owner_uid=uid, mode=0o700)
+            else:
+                validate_dir_fd(next_fd, str(current_path))
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+
+
+def write_all(fd: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        written = os.write(fd, data[offset:])
+        if written <= 0:
+            raise AuditError('short audit log write')
+        offset += written
+
+
+def append_audit_record(record: dict) -> None:
+    old_umask = os.umask(0o077)
+    audit_dir_fd = -1
+    try:
+        audit_dir_fd = open_audit_dir(create=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, 'O_NOFOLLOW'):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(AUDIT_LOG.name, flags, 0o600, dir_fd=audit_dir_fd)
+        except OSError as ex:
+            raise AuditError(f'audit log is unsafe: {ex}') from ex
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise AuditError('audit log is not a regular file')
+            if st.st_uid != os.geteuid():
+                raise AuditError('audit log owner is unsafe')
+            if stat.S_IMODE(st.st_mode) != 0o600:
+                raise AuditError('audit log permissions must be 0600')
+            line = json.dumps({k: v for k, v in record.items() if v is not None}, sort_keys=True) + '\n'
+            write_all(fd, line.encode('utf-8'))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if audit_dir_fd >= 0:
+            os.close(audit_dir_fd)
+        os.umask(old_umask)
+
+
+def audit(args, ok: bool, error_type: str | None = None, phase: str = 'complete', *, required: bool = False) -> None:
+    record = {
+        'ts': int(time.time()),
+        'phase': phase,
+        'ok': ok,
+        'cmd': getattr(args, 'cmd', None),
+        'prcmd': getattr(args, 'prcmd', None),
+        'repo': getattr(args, 'repo', None),
+        'branch': getattr(args, 'branch', None),
+        'base': getattr(args, 'base', None),
+        'number': getattr(args, 'number', None),
+        'error_type': error_type,
+        'sudo_user': os.environ.get('SUDO_USER'),
+        'sudo_uid': os.environ.get('SUDO_UID'),
+    }
+    try:
+        append_audit_record(record)
+    except AuditError:
+        if required:
+            raise
+
+
+def ensure_json_format(args) -> None:
+    if getattr(args, 'format', 'json') != 'json':
+        raise ValueError('only --format json is supported')
+
+
+def positive_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as ex:
+        raise argparse.ArgumentTypeError('must be an integer') from ex
+    if value <= 0:
+        raise argparse.ArgumentTypeError('must be positive')
+    return value
+
+
+def audit_limit(raw: str) -> int:
+    value = positive_int(raw)
+    if value > 200:
+        raise argparse.ArgumentTypeError('must be at most 200')
+    return value
 
 
 def load_config() -> dict:
@@ -47,14 +198,22 @@ def clean_env(token: str | None = None, for_git: bool = False, for_gh: bool = Fa
     return env
 
 
-def run(argv: list[str], *, token: str | None = None, for_git=False, for_gh=False, cwd: Path | None = None, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
-    cp = subprocess.run(
+def run(
+    argv: list[str],
+    *,
+    token: str | None = None,
+    for_git=False,
+    for_gh=False,
+    cwd: Path | None = None,
+    input_bytes: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    cp = run_result(
         argv,
-        cwd=str(cwd) if cwd else None,
-        env=clean_env(token, for_git=for_git, for_gh=for_gh),
-        input=input_bytes,
-        capture_output=True,
-        check=False,
+        token=token,
+        for_git=for_git,
+        for_gh=for_gh,
+        cwd=cwd,
+        input_bytes=input_bytes,
     )
     if cp.returncode != 0:
         err = cp.stderr.decode(errors='replace')[:2000]
@@ -63,12 +222,81 @@ def run(argv: list[str], *, token: str | None = None, for_git=False, for_gh=Fals
     return cp
 
 
+def run_result(
+    argv: list[str],
+    *,
+    token: str | None = None,
+    for_git=False,
+    for_gh=False,
+    cwd: Path | None = None,
+    input_bytes: bytes | None = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        argv,
+        cwd=str(cwd) if cwd else None,
+        env=clean_env(token, for_git=for_git, for_gh=for_gh),
+        input=input_bytes,
+        capture_output=True,
+        check=False,
+    )
+
+
 def token() -> str:
-    cp = run([str(TOKEN_HELPER)])
-    t = cp.stdout.decode().strip()
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(TOKEN_FILE, flags)
+    except OSError as ex:
+        raise RuntimeError(f'GitHub token file is unavailable: {ex}') from ex
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError('GitHub token path is not a regular file')
+        if st.st_uid != os.geteuid():
+            raise RuntimeError('GitHub token file owner is unsafe')
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            raise RuntimeError('GitHub token file permissions must be 0600')
+        with os.fdopen(fd, 'r', encoding='utf-8') as fh:
+            fd = -1
+            t = fh.read().strip()
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if not t:
         raise RuntimeError('empty GitHub token')
     return t
+
+
+def validate_owned_regular_file(path: Path, label: str, mode: int | None = None) -> None:
+    try:
+        st = path.lstat()
+    except OSError as ex:
+        raise RuntimeError(f'{label} is unavailable: {ex}') from ex
+    if stat.S_ISLNK(st.st_mode):
+        raise RuntimeError(f'{label} must not be a symlink')
+    if not stat.S_ISREG(st.st_mode):
+        raise RuntimeError(f'{label} must be a regular file')
+    if st.st_uid != os.geteuid():
+        raise RuntimeError(f'{label} owner is unsafe')
+    if mode is not None and stat.S_IMODE(st.st_mode) != mode:
+        raise RuntimeError(f'{label} permissions must be {mode:04o}')
+
+
+def validate_signing_material() -> None:
+    if not SIGN_COMMITS:
+        return
+    validate_owned_regular_file(SIGNING_KEY, 'Git signing private key', 0o600)
+    validate_owned_regular_file(SIGNING_PUBLIC_KEY, 'Git signing public key', 0o644)
+    public_key = SIGNING_PUBLIC_KEY.read_text(encoding='utf-8').strip()
+    if not public_key.startswith((
+        'ssh-ed25519 ',
+        'ecdsa-sha2-nistp256 ',
+        'sk-ssh-ed25519@openssh.com ',
+        'sk-ecdsa-sha2-nistp256@openssh.com ',
+        'ssh-rsa ',
+    )):
+        raise RuntimeError('Git signing public key type is unsupported')
 
 
 def repo_cfg(cfg: dict, alias: str) -> dict:
@@ -78,140 +306,555 @@ def repo_cfg(cfg: dict, alias: str) -> dict:
     return repos[alias]
 
 
-def validate_branch(branch: str):
-    if not BRANCH_RE.match(branch):
-        raise ValueError('branch must match agent/[A-Za-z0-9._-]+')
+def validate_branch(branch: str, cfg: dict):
+    prefix = cfg.get('allowed_branch_prefix', 'agent/')
+    if not branch.startswith(prefix):
+        raise ValueError(f'branch must start with {prefix}')
+    suffix = branch[len(prefix):]
+    if not suffix or not BRANCH_SUFFIX_RE.match(suffix):
+        raise ValueError('branch suffix must match [A-Za-z0-9._-]+')
+    if '..' in branch or branch.endswith('/'):
+        raise ValueError('branch contains unsafe path components')
     if branch in {'agent/main', 'agent/master', 'agent/prod', 'agent/production'}:
         raise ValueError('branch name too close to protected branch')
 
 
-def validate_worktree(path: str, repo: dict) -> Path:
-    p = Path(path).resolve()
-    repo_path = Path(repo['path']).resolve()
-    work_root = repo_path.parent.resolve()
-    if not str(p).startswith(str(work_root) + os.sep):
-        raise ValueError(f'worktree must be under {work_root}')
-    if not (p / '.git').exists():
-        raise ValueError(f'not a git worktree: {p}')
-    return p
+def github_clone_url(repo: dict) -> str:
+    return f"https://github.com/{repo['full_name']}.git"
+
+
+def upstream_clone_url(repo: dict) -> str:
+    return repo.get('clone_url') or github_clone_url(repo)
+
+
+def fork_repo_name(repo: dict) -> str:
+    return repo.get('fork_repo') or repo['repo']
+
+
+def fork_full_name(repo: dict, owner: str) -> str:
+    return f'{owner}/{fork_repo_name(repo)}'
+
+
+def fork_clone_url(repo: dict, owner: str) -> str:
+    return f'https://github.com/{fork_full_name(repo, owner)}.git'
+
+
+def pr_head_ref(repo: dict, branch: str, owner: str) -> str:
+    fork = fork_full_name(repo, owner)
+    if fork == repo['full_name']:
+        return branch
+    return f"{fork.split('/', 1)[0]}:{branch}"
+
+
+def remote_head_exists(url: str, ref: str, gh_token: str) -> bool:
+    try:
+        cp = run(['git', 'ls-remote', '--heads', url, ref], token=gh_token, for_git=True)
+    except RuntimeError:
+        return False
+    return bool(cp.stdout.decode().strip())
+
+
+def remote_exists(url: str, gh_token: str) -> bool:
+    try:
+        run(['git', 'ls-remote', url, 'HEAD'], token=gh_token, for_git=True)
+    except RuntimeError:
+        return False
+    return True
+
+
+def authenticated_login(gh_token: str) -> str:
+    login = run(['gh', 'api', 'user', '--jq', '.login'], token=gh_token, for_gh=True).stdout.decode().strip()
+    if not login:
+        raise RuntimeError('GitHub PAT authenticated but returned no login')
+    return login
+
+
+def owner_matches_token(owner: str, login: str) -> bool:
+    return owner.lower() == login.lower()
+
+
+def assert_expected_owner(cfg: dict, gh_token: str) -> str:
+    expected_owner = cfg.get('expected_owner') or ''
+    login = authenticated_login(gh_token)
+    if expected_owner and not owner_matches_token(expected_owner, login):
+        raise RuntimeError(
+            'GitHub PAT owner mismatch: '
+            f'token authenticates as {login!r}, but expected_owner is {expected_owner!r}. '
+            f'Set robokitty_github_expected_owner to {login!r}, leave it empty, or install a PAT for {expected_owner!r}.'
+        )
+    return login
+
+
+def github_repo_visible(full_name: str, gh_token: str) -> bool:
+    try:
+        out = run(
+            ['gh', 'repo', 'view', full_name, '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
+            token=gh_token,
+            for_gh=True,
+        ).stdout.decode().strip()
+    except RuntimeError:
+        return False
+    return out.lower() == full_name.lower()
+
+
+def ensure_fork(repo: dict, gh_token: str, owner: str) -> tuple[str, str, bool]:
+    fork = fork_full_name(repo, owner)
+    if fork == repo['full_name']:
+        return fork, github_clone_url(repo), False
+
+    fork_url = fork_clone_url(repo, owner)
+    if remote_exists(fork_url, gh_token):
+        return fork, fork_url, False
+    if github_repo_visible(fork, gh_token):
+        return fork, fork_url, False
+
+    if not repo.get('allow_fork_create', True):
+        raise RuntimeError(f'fork does not exist and fork creation is disabled: {fork}')
+
+    fork_args = ['gh', 'repo', 'fork', repo['full_name'], '--clone=false', '--remote=false', '--default-branch-only']
+    if fork_repo_name(repo) != repo['repo']:
+        fork_args.extend(['--fork-name', fork_repo_name(repo)])
+    run(fork_args, token=gh_token, for_gh=True)
+    for _ in range(12):
+        if remote_exists(fork_url, gh_token):
+            return fork, fork_url, True
+        if github_repo_visible(fork, gh_token):
+            return fork, fork_url, True
+        time.sleep(5)
+    raise RuntimeError(
+        f'fork was requested but did not become visible: {fork} '
+        f'(git_remote_visible=false, api_visible={github_repo_visible(fork, gh_token)})'
+    )
+
+
+def read_prepared_file(path_arg: str, label: str, max_bytes: int) -> bytes:
+    path = Path(path_arg)
+    parent = path.parent
+    if (
+        not path.is_absolute() or
+        parent.parent != PREPARED_FILE_PARENT or
+        not parent.name.startswith('robokitty-submit.') or
+        path.name in {'', '.', '..'}
+    ):
+        raise ValueError(f'{label} must be a prepared broker input file')
+    parent_stat = PREPARED_FILE_PARENT.lstat()
+    if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
+        raise ValueError('prepared file parent is unsafe')
+    dir_flags = os.O_RDONLY
+    if hasattr(os, 'O_DIRECTORY'):
+        dir_flags |= os.O_DIRECTORY
+    if hasattr(os, 'O_NOFOLLOW'):
+        dir_flags |= os.O_NOFOLLOW
+    dir_fd = os.open(parent, dir_flags)
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path.name, flags, dir_fd=dir_fd)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise ValueError(f'{label} must be a regular file')
+            if st.st_size > max_bytes:
+                raise ValueError(f'{label} is too large')
+            data = b''
+            while len(data) <= max_bytes:
+                chunk = os.read(fd, min(1024 * 1024, max_bytes + 1 - len(data)))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > max_bytes:
+                raise ValueError(f'{label} is too large')
+            return data
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
+def materialize_body_file(path_arg: str) -> Path:
+    body = read_prepared_file(path_arg, 'body-file', BODY_FILE_MAX_BYTES)
+    old_umask = os.umask(0o077)
+    try:
+        tmpdir = Path(tempfile.mkdtemp(prefix='robokitty-body.'))
+        body_file = tmpdir / 'body.md'
+        body_file.write_bytes(body)
+        os.chmod(body_file, 0o600)
+        return body_file
+    finally:
+        os.umask(old_umask)
+
+
+def cleanup_prepared_file(path_arg: str | None) -> None:
+    if not path_arg:
+        return
+    path = Path(path_arg)
+    if path.is_absolute() and str(path).startswith(PREPARED_FILE_PREFIX):
+        shutil.rmtree(path.parent, ignore_errors=True)
 
 
 def json_out(obj: dict):
     print(json.dumps(obj, indent=2, sort_keys=True))
 
 
-def cmd_status(args) -> int:
-    cfg = load_config()
-    repo = repo_cfg(cfg, args.repo)
-    ok = bool(repo.get('allow_push') and repo.get('allow_pr_create'))
-    json_out({'ok': ok, 'repo': repo['full_name'], 'broker': 'configured', 'allowed_base_branches': repo.get('allowed_base_branches', [])})
+def read_audit_lines(limit: int) -> list[str]:
+    if not AUDIT_LOG.exists() and not AUDIT_LOG.is_symlink():
+        if AUDIT_CACHE_DIR.exists() or AUDIT_CACHE_DIR.is_symlink() or AUDIT_DIR.exists() or AUDIT_DIR.is_symlink():
+            audit_dir_fd = open_audit_dir(create=False)
+            os.close(audit_dir_fd)
+        return []
+    audit_dir_fd = open_audit_dir(create=False)
+    flags = os.O_RDONLY
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(AUDIT_LOG.name, flags, dir_fd=audit_dir_fd)
+    except OSError as ex:
+        os.close(audit_dir_fd)
+        raise ValueError(f'audit log is unsafe: {ex}') from ex
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ValueError('audit log is not a regular file')
+        if st.st_uid != os.geteuid():
+            raise ValueError('audit log owner is unsafe')
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            raise ValueError('audit log permissions must be 0600')
+        with os.fdopen(fd, 'r', encoding='utf-8') as fh:
+            fd = -1
+            return list(deque(fh, maxlen=limit))
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.close(audit_dir_fd)
+
+
+def cmd_audit(args) -> int:
+    ensure_json_format(args)
+    entries = []
+    for line in read_audit_lines(args.limit):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            entries.append({'parse_error': True})
+    json_out({
+        'ok': True,
+        'audit_log': str(AUDIT_LOG),
+        'count': len(entries),
+        'entries': entries,
+    })
     return 0
 
 
-def current_branch(worktree: Path) -> str:
-    cp = run(['git', '-C', str(worktree), 'branch', '--show-current'])
-    return cp.stdout.decode().strip()
+def cmd_status(args) -> int:
+    ensure_json_format(args)
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    ok = bool(repo.get('allow_push') and repo.get('allow_pr_create'))
+    gh_token = token()
+    validate_signing_material()
+    login = authenticated_login(gh_token)
+    expected_owner = cfg.get('expected_owner') or ''
+    expected_owner_matches_token = bool(not expected_owner or owner_matches_token(expected_owner, login))
+    default_branch = repo.get('default_branch', 'main')
+    upstream_visible = remote_head_exists(upstream_clone_url(repo), f'refs/heads/{default_branch}', gh_token)
+    fork = fork_full_name(repo, login)
+    fork_git_visible = remote_exists(fork_clone_url(repo, login), gh_token) if fork != repo['full_name'] else upstream_visible
+    fork_api_visible = github_repo_visible(fork, gh_token) if fork != repo['full_name'] else upstream_visible
+    json_out({
+        'ok': ok and upstream_visible and expected_owner_matches_token,
+        'repo': repo['full_name'],
+        'fork': fork,
+        'broker': 'configured',
+        'auth': 'third-identity-pat',
+        'authenticated_login': login,
+        'contribution_owner': login,
+        'expected_owner': expected_owner or None,
+        'expected_owner_matches_token': expected_owner_matches_token,
+        'commit_signing_enabled': SIGN_COMMITS,
+        'signing_key': str(SIGNING_PUBLIC_KEY) if SIGN_COMMITS else None,
+        'default_branch_visible': upstream_visible,
+        'fork_visible': fork_git_visible or fork_api_visible,
+        'fork_git_visible': fork_git_visible,
+        'fork_api_visible': fork_api_visible,
+        'allowed_base_branches': repo.get('allowed_base_branches', []),
+    })
+    return 0
 
 
 def cmd_submit(args) -> int:
+    ensure_json_format(args)
     cfg = load_config()
     repo = repo_cfg(cfg, args.repo)
     if not repo.get('allow_push') or not repo.get('allow_pr_create'):
         raise ValueError('repo does not allow push/pr creation')
-    validate_branch(args.branch)
+    validate_branch(args.branch, cfg)
     if args.base not in repo.get('allowed_base_branches', []):
         raise ValueError(f'base branch not allowed: {args.base}')
-    worktree = validate_worktree(args.worktree, repo)
-    body_file = (worktree / args.body_file).resolve() if not os.path.isabs(args.body_file) else Path(args.body_file).resolve()
-    if not str(body_file).startswith(str(worktree) + os.sep):
-        raise ValueError('body-file must be inside the worktree')
-    if body_file.suffix in {'.pem', '.key'} or body_file.name.startswith('.env'):
-        raise ValueError('body-file looks secret-like')
-
-    branch = current_branch(worktree)
-    if branch != args.branch:
-        raise ValueError(f'worktree is on {branch}, expected {args.branch}')
-
-    status = run(['git', '-C', str(worktree), 'status', '--porcelain']).stdout.decode().strip()
-    if status:
-        raise ValueError('worktree has uncommitted changes; commit locally before submit')
-
-    # Fetch origin in the agent-controlled worktree for an accurate merge-base only.
-    run(['git', '-C', str(worktree), 'fetch', 'origin', args.base])
-    diff = run(['git', '-C', str(worktree), '--no-pager', 'diff', '--binary', '--no-ext-diff', '--no-textconv', f'origin/{args.base}...HEAD']).stdout
-    if not diff:
+    if not args.patch_file:
+        raise ValueError('submit must be invoked through the githubctl wrapper')
+    patch = read_prepared_file(args.patch_file, 'patch-file', PATCH_FILE_MAX_BYTES)
+    if not patch.strip():
         raise ValueError('empty diff; nothing to submit')
+    body_file = materialize_body_file(args.body_file)
 
     gh_token = token()
+    validate_signing_material()
+    contribution_owner = assert_expected_owner(cfg, gh_token)
+    clone_url = upstream_clone_url(repo)
     tmp = Path(tempfile.mkdtemp(prefix='robokitty-submit.'))
     try:
-        clone_url = f"https://github.com/{repo['full_name']}.git"
-        run(['git', 'clone', '--no-tags', '--depth', '1', '--branch', args.base, clone_url, str(tmp / 'repo')], token=gh_token, for_git=True)
+        run(
+            ['git', 'clone', '--no-tags', '--depth', '1', '--branch', args.base, clone_url, str(tmp / 'repo')],
+            token=gh_token,
+            for_git=True,
+        )
         clean = tmp / 'repo'
+
         run(['git', '-C', str(clean), 'checkout', '-b', args.branch])
-        run(['git', '-C', str(clean), 'apply', '--index', '--binary'], input_bytes=diff)
+        run(['git', '-C', str(clean), 'apply', '--index', '--binary'], input_bytes=patch)
+        changed_paths = run(
+            ['git', '-C', str(clean), 'diff', '--cached', '--name-only']
+        ).stdout.decode().splitlines()
+        if not cfg.get('allow_workflow_changes') and any(p.startswith('.github/workflows/') for p in changed_paths):
+            raise ValueError('changes under .github/workflows are denied in P0')
         run(['git', '-C', str(clean), 'config', 'user.name', '{{ robokitty_git_user_name }}'])
         run(['git', '-C', str(clean), 'config', 'user.email', '{{ robokitty_git_user_email }}'])
-        run(['git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null', 'commit', '-m', args.title])
-        run(['git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null', 'push', '--no-verify', 'origin', f'HEAD:refs/heads/{args.branch}'], token=gh_token, for_git=True)
+        commit_args = ['git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null']
+        if SIGN_COMMITS:
+            run(['git', '-C', str(clean), 'config', 'gpg.format', 'ssh'])
+            run(['git', '-C', str(clean), 'config', 'user.signingkey', str(SIGNING_PUBLIC_KEY)])
+            run(['git', '-C', str(clean), 'config', 'commit.gpgsign', 'true'])
+            commit_args.extend(['commit', '-S', '-m', args.title])
+        else:
+            commit_args.extend(['commit', '-m', args.title])
+        run(commit_args)
+        if SIGN_COMMITS:
+            commit_object = run(['git', '-C', str(clean), 'cat-file', 'commit', 'HEAD']).stdout.decode(errors='replace')
+            if '\ngpgsig ' not in commit_object and not commit_object.startswith('gpgsig '):
+                raise RuntimeError('broker commit was not signed')
+        push_full_name, push_url, created_fork = ensure_fork(repo, gh_token, contribution_owner)
+        run(
+            [
+                'git', '-C', str(clean), '-c', 'core.hooksPath=/dev/null',
+                'push', '--no-verify', push_url, f'HEAD:refs/heads/{args.branch}',
+            ],
+            token=gh_token,
+            for_git=True,
+        )
 
-        existing = run(['gh', 'pr', 'list', '--repo', repo['full_name'], '--head', args.branch, '--json', 'number,url', '--jq', '.[0] // {}'], token=gh_token, for_gh=True).stdout.decode().strip()
+        head = pr_head_ref(repo, args.branch, contribution_owner)
+        existing = run(
+            [
+                'gh', 'pr', 'list', '--repo', repo['full_name'], '--head', head,
+                '--json', 'number,url', '--jq', '.[0] // {}',
+            ],
+            token=gh_token,
+            for_gh=True,
+        ).stdout.decode().strip()
         existing_obj = json.loads(existing or '{}')
         if existing_obj.get('number'):
-            json_out({'ok': True, 'repo': repo['full_name'], 'branch': args.branch, 'base': args.base, 'pr_number': existing_obj['number'], 'pr_url': existing_obj.get('url'), 'created': False})
+            json_out({
+                'ok': True,
+                'repo': repo['full_name'],
+                'fork': push_full_name,
+                'head': head,
+                'branch': args.branch,
+                'base': args.base,
+                'pr_number': existing_obj['number'],
+                'pr_url': existing_obj.get('url'),
+                'created': False,
+                'fork_created': created_fork,
+            })
             return 0
 
-        gh_args = ['gh', 'pr', 'create', '--repo', repo['full_name'], '--head', args.branch, '--base', args.base, '--title', args.title, '--body-file', str(body_file)]
+        gh_args = [
+            'gh', 'pr', 'create', '--repo', repo['full_name'], '--head', head,
+            '--base', args.base, '--title', args.title, '--body-file', str(body_file),
+        ]
         if args.draft:
             gh_args.append('--draft')
+        if not cfg.get('maintainer_can_modify'):
+            gh_args.append('--no-maintainer-edit')
         pr_url = run(gh_args, token=gh_token, for_gh=True).stdout.decode().strip()
-        json_out({'ok': True, 'repo': repo['full_name'], 'branch': args.branch, 'base': args.base, 'pr_url': pr_url, 'created': True, 'draft': bool(args.draft)})
+        json_out({
+            'ok': True,
+            'repo': repo['full_name'],
+            'fork': push_full_name,
+            'head': head,
+            'branch': args.branch,
+            'base': args.base,
+            'pr_url': pr_url,
+            'created': True,
+            'fork_created': created_fork,
+            'draft': bool(args.draft),
+        })
         return 0
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(body_file.parent, ignore_errors=True)
+        cleanup_prepared_file(args.patch_file)
+        cleanup_prepared_file(args.body_file)
 
 
 def cmd_pr_view(args) -> int:
-    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
-    cp = run(['gh', 'pr', 'view', str(args.number), '--repo', repo['full_name'], '--json', 'number,title,url,state,headRefName,baseRefName,isDraft,mergeable,reviewDecision'], token=gh_token, for_gh=True)
+    ensure_json_format(args)
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    gh_token = token()
+    cp = run([
+        'gh', 'pr', 'view', str(args.number), '--repo', repo['full_name'], '--json',
+        'number,title,url,state,headRefName,baseRefName,isDraft,mergeable,reviewDecision',
+    ], token=gh_token, for_gh=True)
     print(cp.stdout.decode())
     return 0
 
 
 def cmd_pr_checks(args) -> int:
-    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
-    cp = run(['gh', 'pr', 'checks', str(args.number), '--repo', repo['full_name'], '--json', 'name,state,link,description,bucket'], token=gh_token, for_gh=True)
-    print(cp.stdout.decode())
-    return 0
+    ensure_json_format(args)
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    gh_token = token()
+    view_cp = run_result([
+        'gh', 'pr', 'view', str(args.number), '--repo', repo['full_name'],
+        '--json', 'statusCheckRollup',
+    ], token=gh_token, for_gh=True)
+    if view_cp.returncode == 0:
+        try:
+            payload = json.loads(view_cp.stdout.decode() or '{}')
+        except json.JSONDecodeError as ex:
+            raise RuntimeError('gh pr view returned invalid JSON for checks') from ex
+        json_out({
+            'ok': True,
+            'repo': repo['full_name'],
+            'pr_number': args.number,
+            'source': 'gh-pr-view-statusCheckRollup',
+            'checks': payload.get('statusCheckRollup', []),
+        })
+        return 0
+
+    fallback_cp = run_result([
+        'gh', 'pr', 'checks', str(args.number), '--repo', repo['full_name'],
+    ], token=gh_token, for_gh=True)
+    raw = fallback_cp.stdout.decode(errors='replace').strip()
+    if fallback_cp.returncode == 0 or raw:
+        json_out({
+            'ok': True,
+            'repo': repo['full_name'],
+            'pr_number': args.number,
+            'source': 'gh-pr-checks-text',
+            'gh_returncode': fallback_cp.returncode,
+            'raw': raw,
+            'view_error': view_cp.stderr.decode(errors='replace')[:2000].strip(),
+        })
+        return 0
+
+    raise RuntimeError(
+        'failed to read PR checks\n'
+        f'pr view stderr={view_cp.stderr.decode(errors="replace")[:2000].strip()}\n'
+        f'pr checks stderr={fallback_cp.stderr.decode(errors="replace")[:2000].strip()}'
+    )
 
 
 def cmd_pr_comment(args) -> int:
-    cfg = load_config(); repo = repo_cfg(cfg, args.repo); gh_token = token()
-    body = Path(args.body_file)
-    if body.is_absolute() or '..' in body.parts:
-        raise ValueError('body-file must be relative and safe for comment command')
-    cp = run(['gh', 'pr', 'comment', str(args.number), '--repo', repo['full_name'], '--body-file', str(Path.cwd() / body)], token=gh_token, for_gh=True)
-    json_out({'ok': True, 'repo': repo['full_name'], 'pr_number': args.number})
-    return 0
+    ensure_json_format(args)
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    body_file = materialize_body_file(args.body_file)
+    gh_token = token()
+    try:
+        run([
+            'gh', 'pr', 'comment', str(args.number), '--repo', repo['full_name'],
+            '--body-file', str(body_file),
+        ], token=gh_token, for_gh=True)
+        json_out({'ok': True, 'repo': repo['full_name'], 'pr_number': args.number})
+        return 0
+    finally:
+        shutil.rmtree(body_file.parent, ignore_errors=True)
+        cleanup_prepared_file(args.body_file)
+
+
+def requires_required_audit(args) -> bool:
+    if getattr(args, 'cmd', None) == 'submit':
+        return True
+    return getattr(args, 'cmd', None) == 'pr' and getattr(args, 'prcmd', None) == 'comment'
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(prog='githubctl')
     sub = p.add_subparsers(dest='cmd', required=True)
-    s = sub.add_parser('status'); s.add_argument('--repo', required=True); s.add_argument('--format', default='json'); s.set_defaults(func=cmd_status)
-    s = sub.add_parser('submit'); s.add_argument('--repo', required=True); s.add_argument('--worktree', required=True); s.add_argument('--branch', required=True); s.add_argument('--base', required=True); s.add_argument('--title', required=True); s.add_argument('--body-file', required=True); s.add_argument('--draft', action='store_true', default={{ robokitty_github_default_pr_draft | bool | lower }}); s.add_argument('--format', default='json'); s.set_defaults(func=cmd_submit)
-    s = sub.add_parser('pr'); prsub = s.add_subparsers(dest='prcmd', required=True)
-    v = prsub.add_parser('view'); v.add_argument('--repo', required=True); v.add_argument('--number', type=int, required=True); v.add_argument('--format', default='json'); v.set_defaults(func=cmd_pr_view)
-    c = prsub.add_parser('checks'); c.add_argument('--repo', required=True); c.add_argument('--number', type=int, required=True); c.add_argument('--format', default='json'); c.set_defaults(func=cmd_pr_checks)
-    m = prsub.add_parser('comment'); m.add_argument('--repo', required=True); m.add_argument('--number', type=int, required=True); m.add_argument('--body-file', required=True); m.add_argument('--format', default='json'); m.set_defaults(func=cmd_pr_comment)
+
+    s = sub.add_parser('status')
+    s.add_argument('--repo', required=True)
+    s.add_argument('--format', default='json', choices=['json'])
+    s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser('audit')
+    s.add_argument('--limit', type=audit_limit, default=20)
+    s.add_argument('--format', default='json', choices=['json'])
+    s.set_defaults(func=cmd_audit)
+
+    s = sub.add_parser('submit')
+    s.add_argument('--repo', required=True)
+    s.add_argument('--worktree', required=True)
+    s.add_argument('--branch', required=True)
+    s.add_argument('--base', required=True)
+    s.add_argument('--title', required=True)
+    s.add_argument('--body-file', required=True)
+    s.add_argument('--patch-file', help=argparse.SUPPRESS)
+    s.add_argument(
+        '--draft',
+        action='store_true',
+        default={{ robokitty_github_default_pr_draft | bool | ternary('True', 'False') }},
+    )
+    s.add_argument('--format', default='json', choices=['json'])
+    s.set_defaults(func=cmd_submit)
+
+    s = sub.add_parser('pr')
+    prsub = s.add_subparsers(dest='prcmd', required=True)
+
+    v = prsub.add_parser('view')
+    v.add_argument('--repo', required=True)
+    v.add_argument('--number', type=positive_int, required=True)
+    v.add_argument('--format', default='json', choices=['json'])
+    v.set_defaults(func=cmd_pr_view)
+
+    c = prsub.add_parser('checks')
+    c.add_argument('--repo', required=True)
+    c.add_argument('--number', type=positive_int, required=True)
+    c.add_argument('--format', default='json', choices=['json'])
+    c.set_defaults(func=cmd_pr_checks)
+
+    m = prsub.add_parser('comment')
+    m.add_argument('--repo', required=True)
+    m.add_argument('--number', type=positive_int, required=True)
+    m.add_argument('--body-file', required=True)
+    m.add_argument('--format', default='json', choices=['json'])
+    m.set_defaults(func=cmd_pr_comment)
+
     args = p.parse_args(argv)
+    required_audit = requires_required_audit(args)
     try:
-        return args.func(args)
+        if required_audit:
+            audit(args, True, phase='start', required=True)
+        rc = args.func(args)
+        audit(args, rc == 0, required=False)
+        return rc
+    except AuditError as ex:
+        cleanup_prepared_file(getattr(args, 'patch_file', None))
+        cleanup_prepared_file(getattr(args, 'body_file', None))
+        json_out({'ok': False, 'error': str(ex), 'type': 'audit'})
+        return 5
     except ValueError as ex:
+        audit(args, False, 'validation', required=False)
         json_out({'ok': False, 'error': str(ex), 'type': 'validation'})
         return 1
     except Exception as ex:
         # Do not include env vars/tokens. Keep error bounded.
+        audit(args, False, 'execution', required=False)
         json_out({'ok': False, 'error': str(ex)[:2000], 'type': 'execution'})
         return 4
 

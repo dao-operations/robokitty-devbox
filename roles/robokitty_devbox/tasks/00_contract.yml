@@ -7,6 +7,95 @@
       - ansible_facts['distribution_version'] is version('25.00', '<')
     fail_msg: "robokitty-devbox currently targets Ubuntu 24.04 LTS only."
 
+- name: "CONTRACT | Assert baseline host values are safe"
+  ansible.builtin.assert:
+    that:
+      - robokitty_hostname | trim | length > 0
+      - robokitty_hostname is match('^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$')
+      - "'..' not in robokitty_hostname"
+      - >-
+        not (robokitty_configure_ufw | bool) or
+        (robokitty_allowed_ssh_cidrs | length > 0) or
+        (robokitty_cloudflare_access_enabled | bool)
+      - >-
+        not (
+          (robokitty_configure_ufw | bool) and
+          (
+            (robokitty_lockdown_public_ssh | bool) or
+            (robokitty_cloudflare_access_enabled | bool)
+          )
+        ) or
+        (
+          robokitty_allowed_ssh_cidrs |
+          map('string') |
+          map('trim') |
+          map('lower') |
+          select('match', '^(any|anywhere|0+(\.0+){3}/0+|::/0+|(0+:){7}0+/0+)$') |
+          list |
+          length == 0
+        )
+      - robokitty_fail2ban_sshd_maxretry | int >= 1
+      - robokitty_sshd_max_auth_tries | int >= 1
+      - robokitty_sshd_client_alive_count_max | int >= 0
+      - robokitty_sshd_client_alive_interval | int >= 0
+    fail_msg: >-
+      Baseline host values must be safe: hostname must be valid, UFW needs at
+      least one SSH CIDR unless Cloudflare access mode is enabled, lockdown and
+      Cloudflare modes cannot allow public SSH, and SSH/fail2ban retry values
+      must be positive.
+
+- name: "CONTRACT | Assert Cloudflare access values are safe"
+  ansible.builtin.assert:
+    that:
+      - robokitty_cloudflared_service_name is match('^[A-Za-z0-9][A-Za-z0-9_.@-]*$')
+      - robokitty_cloudflared_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_cloudflared_group is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_cloudflared_apt_key_url is match('^https://pkg[.]cloudflare[.]com/.+[.]gpg$')
+      - robokitty_cloudflared_apt_key_path == '/usr/share/keyrings/cloudflare-main.gpg'
+      - robokitty_cloudflared_apt_repo_url == 'https://pkg.cloudflare.com/cloudflared'
+      - robokitty_cloudflared_apt_suite == 'noble'
+      - robokitty_cloudflared_apt_component == 'main'
+      - robokitty_cloudflared_config_dir == '/etc/cloudflared'
+      - robokitty_cloudflared_token_file is search('^' ~ robokitty_cloudflared_config_dir ~ '/')
+      - robokitty_cloudflared_metrics_address is match('^127[.]0[.]0[.]1:[0-9]+$')
+      - >-
+        not (robokitty_cloudflared_manage_service | bool) or
+        (robokitty_cloudflared_tunnel_token | trim | length > 0)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_cloudflared_install | bool)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_cloudflared_manage_service | bool)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_lockdown_public_ssh | bool)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_configure_ufw | bool)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_harden_sshd | bool)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (robokitty_allowed_ssh_cidrs | length == 0)
+      - >-
+        not (robokitty_cloudflare_access_enabled | bool) or
+        (
+          (robokitty_sshd_listen_addresses | length == 1) and
+          ((robokitty_sshd_listen_addresses | first | string) == '127.0.0.1')
+        )
+      - robokitty_cloudflared_ready_retries | int >= 1
+      - robokitty_cloudflared_ready_delay | int >= 1
+    fail_msg: >-
+      Cloudflare access mode requires managed cloudflared, a non-empty tunnel
+      token, enabled UFW and SSHD hardening, an empty SSH CIDR allowlist, and
+      SSHD listening only on 127.0.0.1.
+  when:
+    - (robokitty_cloudflare_access_enabled | bool) or
+      (robokitty_cloudflared_install | bool) or
+      (robokitty_cloudflared_manage_service | bool)
+
 - name: "CONTRACT | Assert installer integrity policy"
   ansible.builtin.assert:
     that:
@@ -31,6 +120,10 @@
 - name: "CONTRACT | Assert Takopi package pinning policy"
   ansible.builtin.assert:
     that:
+      - robokitty_takopi_default_engine == 'codex'
+      - robokitty_takopi_session_mode in ['stateless', 'chat']
+      - robokitty_takopi_topics_scope in ['auto', 'main', 'projects', 'all']
+      - robokitty_takopi_uv_python is match('^[0-9]+([.][0-9]+){0,2}$')
       - >-
         not (robokitty_install_takopi | bool) or
         (robokitty_takopi_package is search('[<>=!~]=?')) or
@@ -47,8 +140,41 @@
       - robokitty_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
       - robokitty_git_user is match('^[a-z_][a-z0-9_-]*[$]?$')
       - robokitty_work_group is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_root is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_root.split('/')"
+      - robokitty_workdir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_workdir.split('/')"
+      - robokitty_live_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_live_dir.split('/')"
+      - robokitty_infra_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_infra_dir.split('/')"
+      - robokitty_libdir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_libdir.split('/')"
+      - robokitty_wrappers_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_wrappers_dir.split('/')"
+      - robokitty_config_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_config_dir.split('/')"
+      - robokitty_state_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_state_dir.split('/')"
+      - robokitty_state_dir == '/var/lib/robokitty-devbox'
+      - robokitty_repo_config_file == robokitty_state_dir ~ '/repos.json'
+      - robokitty_worktree_source_dir == robokitty_state_dir ~ '/worktree-sources'
+      - robokitty_bindir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_bindir.split('/')"
+      - robokitty_workdir is search('^' ~ robokitty_root ~ '/')
+      - robokitty_live_dir is search('^' ~ robokitty_root ~ '/')
+      - robokitty_infra_dir is search('^' ~ robokitty_root ~ '/')
       - robokitty_codex_binary is match('^/[A-Za-z0-9._+/-]+$')
       - "'..' not in robokitty_codex_binary.split('/')"
+      - robokitty_codex_permission_profile is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
+      - robokitty_codex_permission_profile != 'danger-full-access'
+      - robokitty_codex_permission_profile != ':danger-full-access'
+      - robokitty_codex_requirements_file == robokitty_codex_requirements_dir ~ '/requirements.toml'
+      - robokitty_codex_system_config_file == robokitty_codex_requirements_dir ~ '/config.toml'
+      - robokitty_codex_requirements_dir == '/etc/codex'
+      - robokitty_codex_glob_scan_max_depth | int >= 1
+      - robokitty_codex_project_root_markers == []
+      - robokitty_codex_user_max_user_namespaces | int >= 1024
       - >-
         (robokitty_codex_binary is search('^/home/' ~ robokitty_runner_user ~ '/\\.local/bin/')) or
         (robokitty_codex_binary is search('^/usr/local/bin/'))
@@ -58,9 +184,12 @@
   ansible.builtin.assert:
     that:
       - robokitty_codex_auth_method == 'chatgpt'
+      - robokitty_codex_credentials_store != 'keyring'
       - robokitty_codex_approvals_reviewer == 'auto_review'
       - robokitty_codex_enable_network | bool
-      - robokitty_codex_approval_policy != 'danger-full-access'
+      - robokitty_codex_approval_policy == 'on-request'
+      - not (robokitty_codex_allow_login_shell | bool)
+      - robokitty_codex_configure_user_namespaces | bool
     fail_msg: "Codex must use ChatGPT login, Auto-review, internet access, and no danger-full-access."
   when: robokitty_install_codex | bool
 
@@ -69,10 +198,51 @@
     that:
       - not (robokitty_github_allow_merge | bool)
       - not (robokitty_github_allow_workflow_dispatch | bool)
-      - robokitty_github_submit_mode == 'safe-squash'
+      - not (robokitty_github_allow_workflow_changes | bool)
+      - robokitty_github_submit_mode == 'fork-safe-squash'
       - robokitty_github_allowed_branch_prefix == 'agent/'
-    fail_msg: "P0 GitHub broker must stay draft-PR-only with safe-squash agent/* branches."
+      - robokitty_github_broker_runtime_dir is match('^/run/[A-Za-z0-9._+/-]+$')
+      - robokitty_github_broker_socket_path == robokitty_github_broker_runtime_dir ~ '/githubctl.sock'
+      - robokitty_github_broker_exchange_dir == robokitty_state_dir ~ '/githubctl-exchange'
+      - robokitty_github_broker_exchange_dir is not search('^' ~ robokitty_workdir ~ '(/|$)')
+      - robokitty_github_broker_handoff_group == robokitty_runner_user
+    fail_msg: "P0 GitHub broker must stay draft-PR-only with fork-safe-squash agent/* branches."
   when: robokitty_github_broker_enabled | bool
+
+- name: "CONTRACT | Assert Podman runner guardrails"
+  ansible.builtin.assert:
+    that:
+      - robokitty_podman_default_image is match('^[A-Za-z0-9][A-Za-z0-9._:/@+-]+$')
+      - robokitty_podman_network in ['slirp4netns', 'pasta', 'bridge', 'none']
+      - robokitty_podman_pull_policy in ['always', 'missing', 'never', 'newer']
+      - robokitty_podman_packages | length > 0
+      - "'no-new-privileges' in robokitty_podman_security_opts"
+      - robokitty_podman_subuid_count | int >= 65536
+      - robokitty_podman_subgid_count | int >= 65536
+      - robokitty_podman_apparmor_binaries | length > 0
+    fail_msg: >-
+      Podman runner settings must use a safe image reference, non-host network,
+      known pull policy, and usable subordinate id ranges.
+  when: robokitty_podman_enabled | bool
+
+- name: "CONTRACT | Assert Podman security options"
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9=_.:-]+$')
+    fail_msg: "Podman security options must be literal option tokens."
+  loop: "{{ robokitty_podman_security_opts }}"
+  when: robokitty_podman_enabled | bool
+
+- name: "CONTRACT | Assert Podman AppArmor profile paths"
+  ansible.builtin.assert:
+    that:
+      - item.path is match('^/usr/bin/[A-Za-z0-9._+-]+$')
+      - item.profile is match('^[A-Za-z0-9._-]+$')
+    fail_msg: "Podman AppArmor profile entries must be explicit /usr/bin paths."
+  loop: "{{ robokitty_podman_apparmor_binaries }}"
+  when:
+    - robokitty_podman_enabled | bool
+    - robokitty_podman_apparmor_userns_profiles | bool
 
 - name: "CONTRACT | Assert Takopi service secrets when service is enabled"
   ansible.builtin.assert:
@@ -86,22 +256,45 @@
     - robokitty_enable_takopi_service | bool
     - robokitty_start_takopi_service | bool
 
-- name: "CONTRACT | Assert GitHub App config when broker is enabled"
+- name: "CONTRACT | Assert GitHub third identity config when broker is enabled"
   ansible.builtin.assert:
     that:
-      - robokitty_github_app_id | trim | length > 0
-      - robokitty_github_app_installation_id | trim | length > 0
+      - >-
+        robokitty_github_expected_owner | trim | length == 0 or
+        robokitty_github_expected_owner is match('^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]$|^[A-Za-z0-9]$')
       - >-
         (
-          (robokitty_github_app_private_key_pem | trim | length > 0) | ternary(1, 0)
+          (robokitty_github_token | trim | length > 0) | ternary(1, 0)
         ) +
         (
-          (robokitty_github_app_private_key_src | trim | length > 0) | ternary(1, 0)
+          (robokitty_github_token_src | trim | length > 0) | ternary(1, 0)
         ) == 1
     fail_msg: >-
-      GitHub broker is enabled but app id, installation id, or exactly one private key
-      source is not configured.
+      GitHub broker is enabled but exactly one token source is not configured,
+      or the optional expected owner is invalid.
   when: robokitty_github_broker_enabled | bool
+
+- name: "CONTRACT | Assert Git commit signing config when enabled"
+  ansible.builtin.assert:
+    that:
+      - robokitty_git_signing_public_key | trim | length > 0
+      - >-
+        robokitty_git_signing_public_key is match(
+          '^(ssh-ed25519|ecdsa-sha2-nistp256|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com|ssh-rsa) '
+        )
+      - >-
+        (
+          (robokitty_git_signing_private_key_pem | trim | length > 0) | ternary(1, 0)
+        ) +
+        (
+          (robokitty_git_signing_private_key_src | trim | length > 0) | ternary(1, 0)
+        ) == 1
+    fail_msg: >-
+      Git commit signing is enabled but a signing public key and exactly one
+      private key source are not configured.
+  when:
+    - robokitty_github_broker_enabled | bool
+    - robokitty_git_commit_signing_enabled | bool
 
 - name: "CONTRACT | Build configured repository list"
   ansible.builtin.set_fact:
@@ -112,17 +305,62 @@
     that:
       - item is mapping
       - item.alias is defined
-      - item.alias | string | trim | length > 0
+      - item.alias | string is match('^[A-Za-z0-9_-]+$')
       - item.owner is defined
-      - item.owner | string | trim | length > 0
+      - item.owner | string is match('^[A-Za-z0-9][A-Za-z0-9-]*$')
       - item.repo is defined
-      - item.repo | string | trim | length > 0
+      - item.repo | string is match('^[A-Za-z0-9_.-]+$')
+      - item.fork_owner is not defined
+      - item.fork_full_name is not defined
+      - item.fork_clone_url is not defined
+      - item.fork_repo | default(item.repo) | string is match('^[A-Za-z0-9_.-]+$')
       - item.clone_url is defined
       - item.clone_url | string | trim | length > 0
       - item.path is defined
       - item.path | string is search('^' ~ robokitty_root ~ '/')
+      - >-
+        item.container_image |
+        default(robokitty_podman_default_image) |
+        string is match('^[A-Za-z0-9][A-Za-z0-9._:/@+-]+$')
+      - >-
+        (
+          item.container_workdir | default('.') | string == '.'
+        ) or (
+          item.container_workdir | default('.') | string is match('^[A-Za-z0-9._/-]+$') and
+          item.container_workdir | default('.') | string is not search('^/') and
+          item.container_workdir | default('.') | string is not search('(^|/)\\.(/|$)') and
+          item.container_workdir | default('.') | string is not search('(^|/)\\.\\.(/|$)') and
+          item.container_workdir | default('.') | string is not search('//')
+        )
       - item.allowed_base_branches | default([item.default_branch | default('main')]) | length > 0
-    fail_msg: "Each repo must define alias, owner, repo, clone_url, path under robokitty_root, and base branches."
+      - >-
+        item.allowed_base_branches |
+        default([item.default_branch | default('main')]) |
+        map('string') |
+        select('match', '^[A-Za-z0-9._/-]+$') |
+        list |
+        length == (
+          item.allowed_base_branches |
+          default([item.default_branch | default('main')]) |
+          length
+        )
+    fail_msg: >-
+      Each repo must define safe alias, owner, repo, clone_url, path under robokitty_root,
+      and safe base branches.
+  loop: "{{ robokitty_all_repos }}"
+  loop_control:
+    label: "{{ item.alias | default('unknown') }}"
+
+- name: "CONTRACT | Assert configured repository placeholders were replaced"
+  ansible.builtin.assert:
+    that:
+      - (item.owner | string) != 'example-org'
+      - (item.repo | string) != 'example-frontend'
+      - not (item.clone_url | string is search('github[.]com/example-org/'))
+    fail_msg: >-
+      Placeholder repository config is still active for {{ item.alias | default('unknown') }}.
+      Replace example owner, repo, clone_url, path, and allowed_base_branches values
+      before applying the role.
   loop: "{{ robokitty_all_repos }}"
   loop_control:
     label: "{{ item.alias | default('unknown') }}"

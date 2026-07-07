@@ -1,13 +1,80 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
+
 live="{{ robokitty_live_dir }}/codex"
 infra="{{ robokitty_infra_dir }}/codex"
-if [ ! -d "$infra" ]; then
-  echo "infra codex dir not found: $infra" >&2
-  exit 2
-fi
-if [ ! -d "$live" ]; then
-  echo "live codex dir not found: $live" >&2
-  exit 2
-fi
-exec diff -ruN "$infra" "$live"
+
+die() {
+  echo "robokitty-drift-report: $*" >&2
+  exit 1
+}
+
+safe_relative_path() {
+  local path="$1"
+  [[ "$path" =~ ^[A-Za-z0-9._+/-]+$ ]] || return 1
+  case "$path" in
+    /*|*"/../"*|*"/.."|*"//"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_guidance_tree() {
+  local root="$1"
+  local label="$2"
+  local allow_codex_system_cache="${3:-false}"
+  local path
+  local rel
+  local lower
+
+  [ ! -L "$root" ] || die "$label root must not be a symlink: $root"
+  [ -d "$root" ] || die "$label codex dir not found: $root"
+  [ ! -L "$root/AGENTS.md" ] || die "$label AGENTS.md must not be a symlink"
+  [ -f "$root/AGENTS.md" ] || die "$label AGENTS.md not found"
+  [ ! -L "$root/skills" ] || die "$label skills dir must not be a symlink"
+  [ -d "$root/skills" ] || die "$label skills dir not found"
+  if [ "$allow_codex_system_cache" = true ] && [ -e "$root/skills/.system" ]; then
+    [ ! -L "$root/skills/.system" ] || die "$label Codex system skill cache must not be a symlink"
+    [ -d "$root/skills/.system" ] || die "$label Codex system skill cache must be a directory"
+  fi
+
+  while IFS= read -r -d '' path; do
+    rel="${path#"$root"/}"
+    safe_relative_path "$rel" || die "$label contains unsafe path: $rel"
+    [ ! -L "$path" ] || die "$label contains symlink: $rel"
+    lower="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      *secret*|*.pem|*.key|*.env|*.env.*|*token*|*credential*|*auth*)
+        die "$label contains secret-like guidance path: $rel"
+        ;;
+    esac
+
+    if [ -d "$path" ]; then
+      if [ "$rel" = "skills" ] || [[ "$rel" =~ ^skills/[A-Za-z0-9_-]+$ ]]; then
+        continue
+      fi
+      die "$label contains unsupported guidance directory: $rel"
+    fi
+
+    if [ -f "$path" ]; then
+      if [ "$rel" = "AGENTS.md" ] || [[ "$rel" =~ ^skills/[A-Za-z0-9_-]+/SKILL[.]md$ ]]; then
+        continue
+      fi
+      die "$label contains unsupported guidance file: $rel"
+    fi
+
+    die "$label contains unsupported path type: $rel"
+  done < <(
+    if [ "$allow_codex_system_cache" = true ]; then
+      find "$root" -mindepth 1 \
+        \( -path "$root/skills/.system" -o -path "$root/skills/.system/*" \) -prune \
+        -o -print0
+    else
+      find "$root" -mindepth 1 -print0
+    fi
+  )
+}
+
+validate_guidance_tree "$infra" "infra"
+validate_guidance_tree "$live" "live" true
+
+exec diff -ruN --exclude=.system "$infra" "$live"

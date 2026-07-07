@@ -34,7 +34,6 @@ deny_globs = [
 [codex]
 mode = "app_server"
 extra_args = ["-c", "notify=[]"]
-profile = "robokitty-devbox"
 
 {% for repo in robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) %}
 [projects.{{ repo.alias }}]

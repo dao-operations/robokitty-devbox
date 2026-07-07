@@ -7,4 +7,60 @@
   ansible.builtin.service:
     name: takopi
     state: restarted
-  when: robokitty_start_takopi_service | bool
+  when:
+    - robokitty_enable_takopi_service | bool
+    - robokitty_start_takopi_service | bool
+    - robokitty_takopi_bot_token | length > 0
+    - robokitty_takopi_chat_id is not none
+    - robokitty_takopi_allowed_user_ids | length > 0
+
+- name: Restart fail2ban
+  ansible.builtin.service:
+    name: fail2ban
+    state: restarted
+  when:
+    - robokitty_fail2ban_sshd_enabled | bool
+    - >-
+      (not ansible_check_mode) or
+      ('fail2ban.service' in (ansible_facts.services | default({}))) or
+      ('fail2ban' in (ansible_facts.services | default({})))
+
+- name: Restart robokitty-github-broker
+  ansible.builtin.service:
+    name: "{{ robokitty_github_broker_service_name }}"
+    state: restarted
+  when:
+    - robokitty_github_broker_enabled | bool
+    - not ansible_check_mode
+
+- name: Restart robokitty-cloudflared
+  ansible.builtin.systemd:
+    name: "{{ robokitty_cloudflared_service_name }}"
+    state: restarted
+  async: 45
+  poll: 0
+  changed_when: true
+  ignore_unreachable: true
+  when:
+    - robokitty_cloudflared_manage_service | bool
+    - not ansible_check_mode
+
+- name: Reset SSH connection after robokitty-cloudflared restart
+  ansible.builtin.meta: reset_connection
+  when:
+    - robokitty_cloudflared_manage_service | bool
+    - not ansible_check_mode
+
+- name: Wait for SSH after robokitty-cloudflared restart
+  ansible.builtin.wait_for_connection:
+    delay: 5
+    timeout: 180
+  when:
+    - robokitty_cloudflared_manage_service | bool
+    - not ansible_check_mode
+
+- name: Restart ssh
+  ansible.builtin.service:
+    name: ssh
+    state: restarted
+  when: robokitty_harden_sshd | bool

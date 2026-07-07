@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Unix-socket broker daemon for githubctl.
+
+Runs as {{ robokitty_git_user }}. The Codex runner talks to this daemon through
+the root-managed githubctl wrapper; it never receives the GitHub PAT.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pwd
+import socket
+import stat
+import struct
+import subprocess
+import sys
+from pathlib import Path
+
+BROKER = '{{ robokitty_libdir }}/githubctl.py'
+SOCKET_PATH = Path('{{ robokitty_github_broker_socket_path }}')
+ROOT_UID = 0
+RUNNER_UID = pwd.getpwnam('{{ robokitty_runner_user }}').pw_uid
+GIT_UID = pwd.getpwnam('{{ robokitty_git_user }}').pw_uid
+MAX_REQUEST_BYTES = 128 * 1024
+MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+BROKER_TIMEOUT_SECONDS = 900
+
+
+def error_response(message: str, rc: int = 1) -> dict:
+    return {'rc': rc, 'stdout': '', 'stderr': f'githubctl brokerd failed: {message}\n'}
+
+
+def validate_argv(argv: object) -> list[str]:
+    if not isinstance(argv, list) or not argv or not all(isinstance(item, str) for item in argv):
+        raise ValueError('argv must be a non-empty string list')
+    if any('\x00' in item for item in argv):
+        raise ValueError('argv contains NUL')
+    cmd = argv[0]
+    if cmd in {'status', 'audit', 'submit'}:
+        return argv
+    if cmd == 'pr' and len(argv) >= 2 and argv[1] in {'view', 'checks', 'comment'}:
+        return argv
+    raise ValueError('githubctl command is outside the P0 broker surface')
+
+
+def peer_uid(conn: socket.socket) -> int:
+    cred = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+    _pid, uid, _gid = struct.unpack('3i', cred)
+    return uid
+
+
+def read_request(conn: socket.socket) -> dict:
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > MAX_REQUEST_BYTES:
+            raise ValueError('request is too large')
+    if not chunks:
+        raise ValueError('empty request')
+    return json.loads(b''.join(chunks).decode('utf-8'))
+
+
+def run_broker(argv: list[str]) -> dict:
+    env = {
+        'PATH': '/usr/local/bin:/usr/bin:/bin',
+        'HOME': '/home/{{ robokitty_git_user }}',
+        'LANG': 'C.UTF-8',
+        'LC_ALL': 'C.UTF-8',
+        'GIT_TERMINAL_PROMPT': '0',
+    }
+    cp = subprocess.run(
+        [BROKER, *argv],
+        capture_output=True,
+        check=False,
+        env=env,
+        timeout=BROKER_TIMEOUT_SECONDS,
+    )
+    stdout = cp.stdout[:MAX_RESPONSE_BYTES].decode(errors='replace')
+    stderr = cp.stderr[:MAX_RESPONSE_BYTES].decode(errors='replace')
+    return {'rc': cp.returncode, 'stdout': stdout, 'stderr': stderr}
+
+
+def handle(conn: socket.socket) -> None:
+    try:
+        uid = peer_uid(conn)
+        if uid not in {ROOT_UID, RUNNER_UID, GIT_UID}:
+            response = error_response('unauthorized peer uid', 126)
+        else:
+            request = read_request(conn)
+            argv = validate_argv(request.get('argv'))
+            response = run_broker(argv)
+    except Exception as ex:
+        response = error_response(str(ex))
+    conn.sendall(json.dumps(response, sort_keys=True).encode('utf-8'))
+
+
+def bind_socket() -> socket.socket:
+    SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        st = SOCKET_PATH.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISSOCK(st.st_mode):
+            raise RuntimeError(f'{SOCKET_PATH} exists and is not a socket')
+        SOCKET_PATH.unlink()
+
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(SOCKET_PATH))
+    os.chmod(SOCKET_PATH, 0o660)
+    srv.listen(16)
+    return srv
+
+
+def main() -> int:
+    srv = bind_socket()
+    print(f'githubctl broker listening on {SOCKET_PATH}', flush=True)
+    while True:
+        conn, _addr = srv.accept()
+        with conn:
+            handle(conn)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

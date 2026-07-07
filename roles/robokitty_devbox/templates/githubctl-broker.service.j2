@@ -1,0 +1,33 @@
+[Unit]
+Description=Robokitty restricted GitHub broker daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ robokitty_git_user }}
+Group={{ robokitty_github_broker_handoff_group }}
+RuntimeDirectory=robokitty-devbox
+RuntimeDirectoryMode=0770
+ExecStart={{ robokitty_libdir }}/githubctl-brokerd.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ProtectHome=false
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+{% if robokitty_enable_proc_hardening | bool %}
+ProtectProc=invisible
+{% endif %}
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+ReadWritePaths=/home/{{ robokitty_git_user }} {{ robokitty_github_broker_runtime_dir }} {{ robokitty_github_broker_exchange_dir }} /tmp
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

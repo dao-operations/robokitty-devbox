@@ -26,8 +26,20 @@
     shell: /usr/sbin/nologin
     create_home: true
     home: "/home/{{ robokitty_git_user }}"
-    groups: "{{ robokitty_work_group }}"
-    append: true
+
+- name: Ensure GitHub broker user has no supplementary groups
+  ansible.builtin.user:
+    name: "{{ robokitty_git_user }}"
+    groups: ""
+    append: false
+
+- name: Harden GitHub broker home directory
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_git_user }}"
+    state: directory
+    owner: "{{ robokitty_git_user }}"
+    group: "{{ robokitty_git_user }}"
+    mode: "0700"
 
 - name: Create root directories
   ansible.builtin.file:
@@ -37,14 +49,59 @@
     group: "{{ item.group }}"
     mode: "{{ item.mode }}"
   loop:
-    - { path: "{{ robokitty_root }}", owner: root, group: root, mode: "0755" }
-    - { path: "{{ robokitty_workdir }}", owner: "{{ robokitty_runner_user }}", group: "{{ robokitty_work_group }}", mode: "2775" }
-    - { path: "{{ robokitty_live_dir }}", owner: "{{ robokitty_runner_user }}", group: "{{ robokitty_work_group }}", mode: "2775" }
-    - { path: "{{ robokitty_infra_dir }}", owner: "{{ robokitty_runner_user }}", group: "{{ robokitty_work_group }}", mode: "2775" }
-    - { path: "{{ robokitty_config_dir }}", owner: root, group: root, mode: "0755" }
-    - { path: "{{ robokitty_libdir }}", owner: root, group: root, mode: "0755" }
-    - { path: "{{ robokitty_wrappers_dir }}", owner: root, group: root, mode: "0755" }
-    - { path: "/home/{{ robokitty_bridge_user }}/.takopi", owner: "{{ robokitty_bridge_user }}", group: "{{ robokitty_bridge_user }}", mode: "0700" }
-    - { path: "/home/{{ robokitty_runner_user }}/.codex", owner: "{{ robokitty_runner_user }}", group: "{{ robokitty_runner_user }}", mode: "0700" }
-    - { path: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox", owner: "{{ robokitty_git_user }}", group: "{{ robokitty_git_user }}", mode: "0700" }
-    - { path: "/home/{{ robokitty_git_user }}/.cache/robokitty-devbox", owner: "{{ robokitty_git_user }}", group: "{{ robokitty_git_user }}", mode: "0700" }
+    - path: "{{ robokitty_root }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ robokitty_workdir }}"
+      owner: "{{ robokitty_runner_user }}"
+      group: "{{ robokitty_work_group }}"
+      mode: "2775"
+    - path: "{{ robokitty_live_dir }}"
+      owner: "{{ robokitty_runner_user }}"
+      group: "{{ robokitty_work_group }}"
+      mode: "2775"
+    - path: "{{ robokitty_infra_dir }}"
+      owner: "{{ robokitty_runner_user }}"
+      group: "{{ robokitty_work_group }}"
+      mode: "2775"
+    - path: "{{ robokitty_config_dir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ robokitty_state_dir }}"
+      owner: root
+      group: "{{ robokitty_github_broker_handoff_group }}"
+      mode: "0750"
+    - path: "{{ robokitty_worktree_source_dir }}"
+      owner: "{{ robokitty_runner_user }}"
+      group: "{{ robokitty_work_group }}"
+      mode: "2775"
+    - path: "{{ robokitty_libdir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ robokitty_wrappers_dir }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "/home/{{ robokitty_bridge_user }}/.takopi"
+      owner: "{{ robokitty_bridge_user }}"
+      group: "{{ robokitty_bridge_user }}"
+      mode: "0700"
+    - path: "/home/{{ robokitty_runner_user }}/.codex"
+      owner: "{{ robokitty_runner_user }}"
+      group: "{{ robokitty_runner_user }}"
+      mode: "0700"
+    - path: "/home/{{ robokitty_git_user }}/.config/robokitty-devbox"
+      owner: "{{ robokitty_git_user }}"
+      group: "{{ robokitty_git_user }}"
+      mode: "0700"
+    - path: "/home/{{ robokitty_git_user }}/.cache"
+      owner: "{{ robokitty_git_user }}"
+      group: "{{ robokitty_git_user }}"
+      mode: "0700"
+    - path: "/home/{{ robokitty_git_user }}/.cache/robokitty-devbox"
+      owner: "{{ robokitty_git_user }}"
+      group: "{{ robokitty_git_user }}"
+      mode: "0700"

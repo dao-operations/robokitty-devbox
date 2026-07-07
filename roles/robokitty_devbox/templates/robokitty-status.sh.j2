@@ -8,26 +8,41 @@ echo "\n== users =="
 getent passwd {{ robokitty_bridge_user }} {{ robokitty_runner_user }} {{ robokitty_git_user }} || true
 
 echo "\n== tools =="
-for cmd in codex takopi git gh podman jq python3; do
+for cmd in cloudflared codex takopi git gh podman jq python3; do
   if command -v "$cmd" >/dev/null 2>&1; then
     echo "$cmd: $($cmd --version 2>&1 | head -n1)"
   else
     echo "$cmd: missing"
   fi
 done
+if codex_version="$(sudo -n -u {{ robokitty_runner_user }} -- {{ robokitty_codex_binary | quote }} --version 2>&1)"; then
+  echo "codex as {{ robokitty_runner_user }}: $(printf '%s\n' "$codex_version" | head -n1)"
+else
+  echo "codex as {{ robokitty_runner_user }}: unavailable"
+fi
+if takopi_version="$(sudo -n -u {{ robokitty_bridge_user }} -- /home/{{ robokitty_bridge_user }}/.local/bin/takopi --version 2>&1)"; then
+  echo "takopi as {{ robokitty_bridge_user }}: $(printf '%s\n' "$takopi_version" | head -n1)"
+else
+  echo "takopi as {{ robokitty_bridge_user }}: unavailable"
+fi
 
 echo "\n== service =="
+systemctl --no-pager --lines=0 status {{ robokitty_cloudflared_service_name }} || true
 systemctl --no-pager --lines=0 status takopi || true
+systemctl --no-pager --lines=0 status {{ robokitty_github_broker_service_name }} || true
 
 echo "\n== repos =="
-if [ -r {{ robokitty_config_dir }}/repos.json ]; then
-  jq '.repos | keys' {{ robokitty_config_dir }}/repos.json
+if [ -r {{ robokitty_repo_config_file }} ]; then
+  jq '.repos | keys' {{ robokitty_repo_config_file }}
 fi
 
 echo "\n== secret file permissions, no contents =="
 for f in \
   /home/{{ robokitty_bridge_user }}/.takopi/takopi.toml \
-  /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-app.pem \
+  /home/{{ robokitty_git_user }}/.config/robokitty-devbox/github-token \
+{% if robokitty_git_commit_signing_enabled | bool %}
+  {{ robokitty_git_signing_key_path }} \
+{% endif %}
   /home/{{ robokitty_runner_user }}/.codex/auth.json; do
   [ -e "$f" ] && stat -c '%a %U %G %n' "$f" || echo "missing: $f"
 done

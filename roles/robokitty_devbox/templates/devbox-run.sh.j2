@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 usage() {
@@ -6,32 +6,241 @@ usage() {
   exit 2
 }
 
+die() {
+  echo "devbox-run: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+valid_image_ref() {
+  local image="$1"
+  [[ "$image" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@+-]+$ ]]
+}
+
+safe_absolute_path() {
+  local path="$1"
+  [[ "$path" =~ ^/[A-Za-z0-9._+/-]+$ ]] || return 1
+  case "$path" in
+    *"/../"*|*"/.."|*"//"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+safe_relative_path() {
+  local path="$1"
+  [ -n "$path" ] || return 1
+  [[ "$path" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+  case "$path" in
+    /*|~*|*"//"|*"../"*|*".."|../*|*"/."|*"./"*|.) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+git_common_dir() {
+  local repo="$1"
+  local path
+  path="$(git -C "$repo" rev-parse --git-common-dir)"
+  case "$path" in
+    /*) ;;
+    *) path="$repo/$path" ;;
+  esac
+  realpath "$path"
+}
+
+require_config_dir() {
+  local label="$1"
+  local path="$2"
+  [ -n "$path" ] || die "$label is empty"
+  [ ! -L "$path" ] || die "$label must not be a symlink: $path"
+  [ -d "$path" ] || die "$label does not exist: $path"
+  realpath "$path"
+}
+
+path_is_under() {
+  local path="$1"
+  local parent="$2"
+  case "$path" in
+    "$parent"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_repo_scope() {
+  local repo_root="$1"
+  local root_dir="$2"
+  local workdir_dir="$3"
+  local infra_dir="$4"
+
+  path_is_under "$repo_root" "$root_dir" || \
+    die "configured repo root is outside configured root: $repo_root"
+  if path_is_under "$repo_root" "$workdir_dir"; then
+    return 0
+  fi
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    return 0
+  fi
+  die "configured repo root must be under workdir or match infra_dir: $repo_root"
+}
+
+validate_worktree_common_dir() {
+  local repo_path="$1"
+  local repo_root="$2"
+  local worktree_path="$3"
+  local infra_dir="$4"
+  local repo_common
+  local worktree_common
+  local source_repo
+
+  repo_common="$(git_common_dir "$repo_path")"
+  worktree_common="$(git_common_dir "$worktree_path")"
+  if [ "$repo_common" = "$worktree_common" ]; then
+    return 0
+  fi
+
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    source_repo="{{ robokitty_worktree_source_dir }}/$(basename "$repo_root")"
+    [ ! -L "$source_repo" ] || die "worktree source repo must not be a symlink: $source_repo"
+    [ -d "$source_repo" ] || die "worktree source repo does not exist: $source_repo"
+    [ "$(git -C "$source_repo" rev-parse --is-bare-repository)" = "true" ] || \
+      die "worktree source repo is not bare: $source_repo"
+    [ "$(realpath "$source_repo")" = "$worktree_common" ] || \
+      die "worktree does not belong to configured repo: $worktree_path"
+    return 0
+  fi
+
+  die "worktree does not belong to configured repo: $worktree_path"
+}
+
 [ "$#" -ge 4 ] || usage
-alias="$1"; shift
+repo_alias="$1"; shift
 worktree="$1"; shift
 [ "${1:-}" = "--" ] || usage
 shift
 [ "$#" -gt 0 ] || usage
 
-config="{{ robokitty_config_dir }}/repos.json"
-repo_path="$(jq -r --arg a "$alias" '.repos[$a].path // empty' "$config")"
-image="$(jq -r --arg a "$alias" '.repos[$a].container_image // empty' "$config")"
-[ -n "$repo_path" ] || { echo "unknown repo alias: $alias" >&2; exit 2; }
-[ -n "$image" ] || image="{{ robokitty_podman_default_image }}"
+require_cmd git
+require_cmd jq
+require_cmd podman
+require_cmd realpath
 
-real_worktree="$(realpath "$worktree")"
-repo_parent="$(dirname "$(realpath "$repo_path")")"
-case "$real_worktree" in
-  "$repo_parent"/*) ;;
-  *) echo "worktree must be under $repo_parent" >&2; exit 2 ;;
+config="{{ robokitty_repo_config_file }}"
+podman_network={{ robokitty_podman_network | quote }}
+podman_pull_policy={{ robokitty_podman_pull_policy | quote }}
+
+[[ "$repo_alias" =~ ^[A-Za-z0-9_-]+$ ]] || die "repo alias must match [A-Za-z0-9_-]+"
+case "$worktree" in
+  /*) ;;
+  *) die "worktree path must be absolute" ;;
+esac
+safe_absolute_path "$worktree" || die "worktree path contains unsafe characters: $worktree"
+[ -r "$config" ] || die "repo config is not readable: $config"
+
+repo_path="$(jq -er --arg a "$repo_alias" '.repos[$a].path // empty' "$config")" || \
+  die "unknown repo alias: $repo_alias"
+safe_absolute_path "$repo_path" || die "configured repo path contains unsafe characters: $repo_path"
+root_dir="$(require_config_dir "configured root" "$(jq -er '.root // empty' "$config")")"
+workdir_dir="$(require_config_dir "configured workdir" "$(jq -er '.workdir // empty' "$config")")"
+infra_path="$(jq -er '.infra_dir // empty' "$config" 2>/dev/null || true)"
+infra_dir=""
+if [ -n "$infra_path" ]; then
+  infra_dir="$(require_config_dir "configured infra_dir" "$infra_path")"
+fi
+image="$(jq -er --arg a "$repo_alias" '.repos[$a].container_image // empty' "$config" 2>/dev/null || true)"
+[ -n "$image" ] || image={{ robokitty_podman_default_image | quote }}
+valid_image_ref "$image" || die "container image is not a safe reference: $image"
+container_workdir="$(jq -er --arg a "$repo_alias" '.repos[$a].container_workdir // "."' "$config" 2>/dev/null || true)"
+[ -n "$container_workdir" ] || container_workdir="."
+if [ "$container_workdir" != "." ]; then
+  safe_relative_path "$container_workdir" || \
+    die "container_workdir must be a safe relative path: $container_workdir"
+fi
+
+case "$podman_pull_policy" in
+  always|missing|never|newer) ;;
+  *) die "unsupported Podman pull policy: $podman_pull_policy" ;;
+esac
+case "$podman_network" in
+  slirp4netns|pasta|bridge|none) ;;
+  *) die "unsupported Podman network: $podman_network" ;;
 esac
 
+[ ! -L "$repo_path" ] || die "configured repo path must not be a symlink: $repo_path"
+[ -d "$repo_path" ] || die "configured repo path does not exist: $repo_path"
+git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  die "configured repo path is not a git worktree: $repo_path"
+repo_root="$(realpath "$(git -C "$repo_path" rev-parse --show-toplevel)")"
+safe_absolute_path "$repo_root" || die "configured repo root contains unsafe characters: $repo_root"
+[ "$(realpath "$repo_path")" = "$repo_root" ] || \
+  die "configured repo path must point at the Git top-level: $repo_path"
+validate_repo_scope "$repo_root" "$root_dir" "$workdir_dir" "$infra_dir"
+
+[ ! -L "$worktree" ] || die "worktree path must not be a symlink: $worktree"
+[ -d "$worktree" ] || die "worktree path does not exist: $worktree"
+real_worktree="$(realpath "$worktree")"
+safe_absolute_path "$real_worktree" || die "worktree path contains unsafe characters: $real_worktree"
+[ "$real_worktree" = "$worktree" ] || die "worktree path must be canonical: $worktree"
+path_is_under "$real_worktree" "$root_dir" || \
+  die "worktree path is outside configured root: $real_worktree"
+if [ "$real_worktree" != "$repo_root" ]; then
+  worktree_prefix="${repo_root}.agent."
+  if [ -n "$infra_dir" ] && [ "$repo_root" = "$infra_dir" ]; then
+    worktree_prefix="${workdir_dir}/$(basename "$repo_root").agent."
+  fi
+  case "$real_worktree" in
+    "$worktree_prefix"*) ;;
+    *) die "worktree must be the repo root or the configured repo.agent.* worktree path" ;;
+  esac
+fi
+actual_top="$(git -C "$real_worktree" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$actual_top" ] || die "worktree path is not a git worktree: $real_worktree"
+[ "$(realpath "$actual_top")" = "$real_worktree" ] || \
+  die "worktree path resolves to a different Git top-level: $actual_top"
+validate_worktree_common_dir "$repo_path" "$repo_root" "$real_worktree" "$infra_dir"
+if [ "$container_workdir" = "." ]; then
+  container_cwd="/workspace"
+else
+  [ -d "$real_worktree/$container_workdir" ] || \
+    die "container_workdir does not exist in worktree: $container_workdir"
+  container_cwd="/workspace/$container_workdir"
+fi
+
+if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
+  runtime_dir="/run/user/$(id -u)"
+  if [ -d "$runtime_dir" ]; then
+    export XDG_RUNTIME_DIR="$runtime_dir"
+  fi
+fi
+
 exec podman run --rm \
-  --pull={{ robokitty_podman_pull_policy }} \
+  --pull="$podman_pull_policy" \
   --userns=keep-id \
-  --security-opt=no-new-privileges \
+{% for opt in robokitty_podman_security_opts %}
+  --security-opt={{ opt | quote }} \
+{% endfor %}
   --cap-drop=ALL \
-  --network={{ robokitty_podman_network }} \
-  -v "$real_worktree:/workspace:rw" \
-  -w /workspace \
+  --network="$podman_network" \
+  --http-proxy=false \
+  --env HOME=/tmp \
+  --env XDG_CACHE_HOME=/tmp/.cache \
+  --env XDG_CONFIG_HOME=/tmp/.config \
+  --env XDG_STATE_HOME=/tmp/.local/state \
+  --env GH_TOKEN= \
+  --env GITHUB_TOKEN= \
+  --env OPENAI_API_KEY= \
+  --env CODEX_API_KEY= \
+  --env TELEGRAM_BOT_TOKEN= \
+  --env HTTP_PROXY= \
+  --env HTTPS_PROXY= \
+  --env ALL_PROXY= \
+  --env NO_PROXY= \
+  --env http_proxy= \
+  --env https_proxy= \
+  --env all_proxy= \
+  --env no_proxy= \
+  --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+  --mount "type=bind,source=${real_worktree},target=/workspace,rw" \
+  -w "$container_cwd" \
   "$image" "$@"

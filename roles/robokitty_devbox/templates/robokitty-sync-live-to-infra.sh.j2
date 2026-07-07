@@ -1,8 +1,159 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
-live="{{ robokitty_live_dir }}/codex/"
-infra="{{ robokitty_infra_dir }}/codex/"
-[ -d "$live" ] || { echo "missing live dir: $live" >&2; exit 2; }
-[ -d "$infra" ] || { echo "missing infra dir: $infra" >&2; exit 2; }
-rsync -a --delete --exclude='*.secret' --exclude='*.pem' --exclude='.env*' "$live" "$infra"
-echo "Synced live codex guidance to infra repo. Review git diff under {{ robokitty_infra_dir }}."
+
+live="{{ robokitty_live_dir }}/codex"
+infra_repo="{{ robokitty_infra_dir }}"
+repo_alias="robokitty-infra"
+
+die() {
+  echo "robokitty-sync-live-to-infra: $*" >&2
+  exit 1
+}
+
+usage() {
+  echo "usage: robokitty-sync-live-to-infra agent/<slug> [base-branch]" >&2
+  exit 2
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+safe_relative_path() {
+  local path="$1"
+  [[ "$path" =~ ^[A-Za-z0-9._+/-]+$ ]] || return 1
+  case "$path" in
+    /*|*"/../"*|*"/.."|*"//"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_guidance_tree() {
+  local root="$1"
+  local label="$2"
+  local allow_codex_system_cache="${3:-false}"
+  local path
+  local rel
+  local lower
+
+  [ ! -L "$root" ] || die "$label root must not be a symlink: $root"
+  [ -d "$root" ] || die "$label codex dir not found: $root"
+  [ ! -L "$root/AGENTS.md" ] || die "$label AGENTS.md must not be a symlink"
+  [ -f "$root/AGENTS.md" ] || die "$label AGENTS.md not found"
+  [ ! -L "$root/skills" ] || die "$label skills dir must not be a symlink"
+  [ -d "$root/skills" ] || die "$label skills dir not found"
+  if [ "$allow_codex_system_cache" = true ] && [ -e "$root/skills/.system" ]; then
+    [ ! -L "$root/skills/.system" ] || die "$label Codex system skill cache must not be a symlink"
+    [ -d "$root/skills/.system" ] || die "$label Codex system skill cache must be a directory"
+  fi
+
+  while IFS= read -r -d '' path; do
+    rel="${path#"$root"/}"
+    safe_relative_path "$rel" || die "$label contains unsafe path: $rel"
+    [ ! -L "$path" ] || die "$label contains symlink: $rel"
+    lower="$(printf '%s' "$rel" | tr '[:upper:]' '[:lower:]')"
+    case "$lower" in
+      *secret*|*.pem|*.key|*.env|*.env.*|*token*|*credential*|*auth*)
+        die "$label contains secret-like guidance path: $rel"
+        ;;
+    esac
+
+    if [ -d "$path" ]; then
+      if [ "$rel" = "skills" ] || [[ "$rel" =~ ^skills/[A-Za-z0-9_-]+$ ]]; then
+        continue
+      fi
+      die "$label contains unsupported guidance directory: $rel"
+    fi
+
+    if [ -f "$path" ]; then
+      if [ "$rel" = "AGENTS.md" ] || [[ "$rel" =~ ^skills/[A-Za-z0-9_-]+/SKILL[.]md$ ]]; then
+        continue
+      fi
+      die "$label contains unsupported guidance file: $rel"
+    fi
+
+    die "$label contains unsupported path type: $rel"
+  done < <(
+    if [ "$allow_codex_system_cache" = true ]; then
+      find "$root" -mindepth 1 \
+        \( -path "$root/skills/.system" -o -path "$root/skills/.system/*" \) -prune \
+        -o -print0
+    else
+      find "$root" -mindepth 1 -print0
+    fi
+  )
+}
+
+require_cmd git
+require_cmd realpath
+require_cmd robokitty-new-worktree
+require_cmd rsync
+
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+branch="$1"
+base="${2:-}"
+
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || die "branch must match agent/[A-Za-z0-9._-]+"
+[[ "$branch" != *..* ]] || die "branch must not contain '..'"
+if [ -n "$base" ]; then
+  [[ "$base" =~ ^[A-Za-z0-9._/-]+$ ]] || die "base branch is not a safe ref name: $base"
+fi
+
+[ ! -L "$infra_repo" ] || die "infra repo path must not be a symlink: $infra_repo"
+[ -d "$infra_repo" ] || die "missing infra repo: $infra_repo"
+git -C "$infra_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  die "infra path is not a Git worktree: $infra_repo"
+infra_root="$(realpath "$(git -C "$infra_repo" rev-parse --show-toplevel)")"
+[ "$(realpath "$infra_repo")" = "$infra_root" ] || \
+  die "infra path must point at the Git top-level: $infra_repo"
+
+validate_guidance_tree "$live" "live" true
+validate_guidance_tree "$infra_repo/codex" "infra"
+
+if [ -n "$base" ]; then
+  sync_worktree="$(robokitty-new-worktree "$repo_alias" "$branch" "$base")"
+else
+  sync_worktree="$(robokitty-new-worktree "$repo_alias" "$branch")"
+fi
+sync_worktree="$(realpath "$sync_worktree")"
+[ ! -L "$sync_worktree" ] || die "sync worktree path must not be a symlink: $sync_worktree"
+[ -d "$sync_worktree" ] || die "sync worktree does not exist: $sync_worktree"
+git -C "$sync_worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1 || \
+  die "sync worktree is not a Git worktree: $sync_worktree"
+sync_root="$(realpath "$(git -C "$sync_worktree" rev-parse --show-toplevel)")"
+[ "$sync_root" = "$sync_worktree" ] || die "sync worktree must point at the Git top-level"
+[ "$(git -C "$sync_worktree" branch --show-current)" = "$branch" ] || \
+  die "sync worktree is not on expected branch: $branch"
+infra_common="$(git -C "$infra_repo" rev-parse --git-common-dir)"
+case "$infra_common" in
+  /*) ;;
+  *) infra_common="$infra_repo/$infra_common" ;;
+esac
+sync_common="$(git -C "$sync_worktree" rev-parse --git-common-dir)"
+case "$sync_common" in
+  /*) ;;
+  *) sync_common="$sync_worktree/$sync_common" ;;
+esac
+infra_common="$(realpath "$infra_common")"
+sync_common="$(realpath "$sync_common")"
+if [ "$infra_common" != "$sync_common" ]; then
+  source_common="{{ robokitty_worktree_source_dir }}/$(basename "$infra_root")"
+  [ ! -L "$source_common" ] || die "worktree source repo must not be a symlink: $source_common"
+  [ -d "$source_common" ] || die "worktree source repo does not exist: $source_common"
+  [ "$(git -C "$source_common" rev-parse --is-bare-repository)" = "true" ] || \
+    die "worktree source repo is not bare: $source_common"
+  [ "$(realpath "$source_common")" = "$sync_common" ] || \
+    die "sync worktree does not belong to infra repo"
+fi
+validate_guidance_tree "$sync_worktree/codex" "sync worktree"
+
+rsync -rt --delete \
+  --exclude='/skills/.system/***' \
+  --chmod=Du=rwx,Dg=rwx,Do=rx,Fu=rw,Fg=rw,Fo=r \
+  "$live/" "$sync_worktree/codex/"
+
+validate_guidance_tree "$live" "live" true
+validate_guidance_tree "$sync_worktree/codex" "sync worktree"
+
+echo "$sync_worktree"
+echo "Synced live codex guidance to $sync_worktree/codex. Review git diff there, commit, and submit with githubctl."

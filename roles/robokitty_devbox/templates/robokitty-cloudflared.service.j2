@@ -1,0 +1,40 @@
+[Unit]
+Description=Cloudflare Tunnel connector for Robokitty devbox
+Documentation=https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+User={{ robokitty_cloudflared_user }}
+Group={{ robokitty_cloudflared_group }}
+ExecStart=/usr/bin/cloudflared tunnel{% if robokitty_cloudflared_no_autoupdate | bool %} --no-autoupdate{% endif %} --metrics {{ robokitty_cloudflared_metrics_address }} run --token-file {{ robokitty_cloudflared_token_file }}
+Restart=on-failure
+RestartSec=5s
+RuntimeDirectory=cloudflared
+StateDirectory=cloudflared
+LogsDirectory=cloudflared
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+{% if robokitty_enable_proc_hardening | bool %}
+ProtectProc=invisible
+{% endif %}
+ProtectSystem=strict
+ReadOnlyPaths={{ robokitty_cloudflared_config_dir }}
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

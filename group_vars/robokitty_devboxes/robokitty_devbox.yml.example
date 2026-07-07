@@ -13,14 +13,26 @@ robokitty_uv_installer_unverified_reason: >-
 robokitty_takopi_allow_unpinned: true
 robokitty_takopi_unpinned_reason: "P0 bootstrap accepts latest Takopi until a version pin is selected."
 
+# WP1 host baseline. Public SSH is allowed by default to avoid lockout during
+# initial VPS bootstrap. Set robokitty_lockdown_public_ssh=true only after
+# replacing these broad CIDRs with trusted operator or VPN ranges.
+robokitty_lockdown_public_ssh: false
+robokitty_allowed_ssh_cidrs:
+  - "0.0.0.0/0"
+  - "::/0"
+
 robokitty_takopi_chat_id: null
 robokitty_takopi_allowed_user_ids:
   - 123456789
 
-robokitty_github_app_id: ""
-robokitty_github_app_installation_id: ""
-# Preferred: keep private key outside git and copy it from your local machine during playbook run.
-robokitty_github_app_private_key_src: ""
+# Optional fail-closed assertion. Leave empty to derive the contribution owner
+# from the GitHub PAT login at runtime.
+robokitty_github_expected_owner: ""
+# Preferred: store the PAT in Ansible Vault. This local source option exists for
+# private operator inventories that keep secrets outside git.
+robokitty_github_token_src: ""
+robokitty_git_signing_private_key_src: ""
+robokitty_git_signing_public_key: "ssh-ed25519 AAAA_EXAMPLE robokitty-agent-signing"
 
 robokitty_repos:
   - alias: dao

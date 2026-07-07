@@ -1,0 +1,111 @@
+---
+- name: "CLOUDFLARE | Ensure cloudflared group exists"
+  ansible.builtin.group:
+    name: "{{ robokitty_cloudflared_group }}"
+    system: true
+    state: present
+
+- name: "CLOUDFLARE | Ensure cloudflared user exists"
+  ansible.builtin.user:
+    name: "{{ robokitty_cloudflared_user }}"
+    group: "{{ robokitty_cloudflared_group }}"
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+    state: present
+
+- name: "CLOUDFLARE | Ensure apt keyring directory exists"
+  ansible.builtin.file:
+    path: "{{ robokitty_cloudflared_apt_key_path | dirname }}"
+    owner: root
+    group: root
+    mode: "0755"
+    state: directory
+  when: robokitty_cloudflared_install | bool
+
+- name: "CLOUDFLARE | Install Cloudflare apt signing key"
+  ansible.builtin.get_url:
+    url: "{{ robokitty_cloudflared_apt_key_url }}"
+    dest: "{{ robokitty_cloudflared_apt_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: robokitty_cloudflared_install | bool
+
+- name: "CLOUDFLARE | Configure cloudflared apt repository"
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [signed-by={{ robokitty_cloudflared_apt_key_path }}]
+      {{ robokitty_cloudflared_apt_repo_url }}
+      {{ robokitty_cloudflared_apt_suite }}
+      {{ robokitty_cloudflared_apt_component }}
+    filename: cloudflared
+    state: present
+    update_cache: true
+  when: robokitty_cloudflared_install | bool
+
+- name: "CLOUDFLARE | Install cloudflared"
+  ansible.builtin.apt:
+    name: cloudflared
+    state: present
+  when: robokitty_cloudflared_install | bool
+
+- name: "CLOUDFLARE | Ensure cloudflared config directory exists"
+  ansible.builtin.file:
+    path: "{{ robokitty_cloudflared_config_dir }}"
+    owner: root
+    group: "{{ robokitty_cloudflared_group }}"
+    mode: "0750"
+    state: directory
+  when: robokitty_cloudflared_manage_service | bool
+
+- name: "CLOUDFLARE | Install tunnel token file"
+  ansible.builtin.copy:
+    dest: "{{ robokitty_cloudflared_token_file }}"
+    owner: root
+    group: "{{ robokitty_cloudflared_group }}"
+    mode: "0640"
+    content: "{{ robokitty_cloudflared_tunnel_token | trim }}\n"
+  no_log: true
+  notify: Restart robokitty-cloudflared
+  when: robokitty_cloudflared_manage_service | bool
+
+- name: "CLOUDFLARE | Install cloudflared systemd unit"
+  ansible.builtin.template:
+    src: robokitty-cloudflared.service.j2
+    dest: "/etc/systemd/system/{{ robokitty_cloudflared_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart robokitty-cloudflared
+  when: robokitty_cloudflared_manage_service | bool
+
+- name: "CLOUDFLARE | Apply cloudflared unit changes before SSH lockdown"
+  ansible.builtin.meta: flush_handlers
+  when: robokitty_cloudflared_manage_service | bool
+
+- name: "CLOUDFLARE | Manage cloudflared service"
+  ansible.builtin.systemd:
+    name: "{{ robokitty_cloudflared_service_name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: robokitty_cloudflared_manage_service | bool
+
+- name: "CLOUDFLARE | Wait for local tunnel readiness"
+  ansible.builtin.command:
+    cmd: >-
+      cloudflared tunnel --metrics
+      {{ robokitty_cloudflared_metrics_address }}
+      ready
+  register: robokitty_cloudflared_ready
+  changed_when: false
+  retries: "{{ robokitty_cloudflared_ready_retries }}"
+  delay: "{{ robokitty_cloudflared_ready_delay }}"
+  until: robokitty_cloudflared_ready.rc == 0
+  when:
+    - robokitty_cloudflared_manage_service | bool
+    - robokitty_cloudflared_require_ready | bool

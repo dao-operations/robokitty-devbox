@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 unset TELEGRAM_BOT_TOKEN
@@ -9,4 +9,4 @@ unset OPENAI_API_KEY
 unset CODEX_API_KEY
 unset SSH_AUTH_SOCK
 
-exec sudo -H -n -u {{ robokitty_runner_user }} -- {{ robokitty_codex_binary | quote }} "$@"
+exec /usr/bin/sudo -H -n -u {{ robokitty_runner_user }} -- {{ robokitty_codex_binary | quote }} "$@"

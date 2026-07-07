@@ -6,10 +6,15 @@
     owner: root
     group: root
     mode: "0755"
-    checksum: "{{ robokitty_uv_installer_checksum if (robokitty_uv_installer_checksum | trim | length > 0) else omit }}"
+    checksum: >-
+      {{ robokitty_uv_installer_checksum
+      if (robokitty_uv_installer_checksum | trim | length > 0)
+      else omit }}
 
 - name: Install uv as bridge user
-  ansible.builtin.command: /tmp/robokitty-uv-install.sh
+  ansible.builtin.command:
+    argv:
+      - /tmp/robokitty-uv-install.sh
   args:
     creates: "/home/{{ robokitty_bridge_user }}/.local/bin/uv"
   become: true
@@ -19,7 +24,12 @@
     UV_NO_MODIFY_PATH: "1"
 
 - name: Install Takopi Python runtime
-  ansible.builtin.command: "/home/{{ robokitty_bridge_user }}/.local/bin/uv python install {{ robokitty_takopi_uv_python }}"
+  ansible.builtin.command:
+    argv:
+      - "/home/{{ robokitty_bridge_user }}/.local/bin/uv"
+      - python
+      - install
+      - "{{ robokitty_takopi_uv_python }}"
   become: true
   become_user: "{{ robokitty_bridge_user }}"
   changed_when: false
@@ -27,12 +37,66 @@
     HOME: "/home/{{ robokitty_bridge_user }}"
     PATH: "/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+- name: Set Takopi install marker path
+  ansible.builtin.set_fact:
+    robokitty_takopi_install_marker: >-
+      /home/{{ robokitty_bridge_user }}/.local/state/robokitty-devbox/takopi-{{
+      (robokitty_takopi_package ~ ':' ~ robokitty_takopi_uv_python) |
+      hash('sha1') }}.stamp
+
+- name: Ensure Takopi install state directory exists
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_bridge_user }}/.local/state/robokitty-devbox"
+    state: directory
+    owner: "{{ robokitty_bridge_user }}"
+    group: "{{ robokitty_bridge_user }}"
+    mode: "0700"
+
+- name: Check Takopi executable
+  ansible.builtin.stat:
+    path: "/home/{{ robokitty_bridge_user }}/.local/bin/takopi"
+  register: robokitty_takopi_executable_stat
+
+- name: Check Takopi install marker
+  ansible.builtin.stat:
+    path: "{{ robokitty_takopi_install_marker }}"
+  register: robokitty_takopi_marker_stat
+
 - name: Install Takopi as bridge user
-  ansible.builtin.command: "/home/{{ robokitty_bridge_user }}/.local/bin/uv tool install {{ robokitty_takopi_package }}"
-  args:
-    creates: "/home/{{ robokitty_bridge_user }}/.local/bin/takopi"
+  ansible.builtin.command:
+    argv:
+      - "/home/{{ robokitty_bridge_user }}/.local/bin/uv"
+      - tool
+      - install
+      - "-U"
+      - "--python"
+      - "{{ robokitty_takopi_uv_python }}"
+      - "{{ robokitty_takopi_package }}"
   become: true
   become_user: "{{ robokitty_bridge_user }}"
+  register: robokitty_takopi_install_result
+  when: not (robokitty_takopi_executable_stat.stat.exists and robokitty_takopi_marker_stat.stat.exists)
+  environment:
+    HOME: "/home/{{ robokitty_bridge_user }}"
+    PATH: "/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+- name: Record Takopi install marker
+  ansible.builtin.file:
+    path: "{{ robokitty_takopi_install_marker }}"
+    state: touch
+    owner: "{{ robokitty_bridge_user }}"
+    group: "{{ robokitty_bridge_user }}"
+    mode: "0600"
+  when: robokitty_takopi_install_result is changed
+
+- name: Verify Takopi install as bridge user
+  ansible.builtin.command:
+    argv:
+      - "/home/{{ robokitty_bridge_user }}/.local/bin/takopi"
+      - "--version"
+  become: true
+  become_user: "{{ robokitty_bridge_user }}"
+  changed_when: false
   environment:
     HOME: "/home/{{ robokitty_bridge_user }}"
     PATH: "/home/{{ robokitty_bridge_user }}/.local/bin:/usr/local/bin:/usr/bin:/bin"
@@ -70,4 +134,13 @@
   ansible.builtin.service:
     name: takopi
     enabled: "{{ robokitty_enable_takopi_service | bool }}"
-    state: "{{ 'started' if (robokitty_start_takopi_service | bool and robokitty_takopi_bot_token | length > 0 and robokitty_takopi_chat_id is not none and robokitty_takopi_allowed_user_ids | length > 0) else 'stopped' }}"
+    state: >-
+      {{ 'started'
+      if (
+        robokitty_enable_takopi_service | bool and
+        robokitty_start_takopi_service | bool and
+        robokitty_takopi_bot_token | length > 0 and
+        robokitty_takopi_chat_id is not none and
+        robokitty_takopi_allowed_user_ids | length > 0
+      )
+      else 'stopped' }}

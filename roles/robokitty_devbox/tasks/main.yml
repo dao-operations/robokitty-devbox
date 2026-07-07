@@ -7,9 +7,57 @@
   ansible.builtin.include_tasks: users.yml
   tags: [setup]
 
+- name: "CHECK | Inspect declared Unix users in check mode"
+  ansible.builtin.command:
+    argv:
+      - getent
+      - passwd
+      - "{{ item }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  loop:
+    - "{{ robokitty_bridge_user }}"
+    - "{{ robokitty_runner_user }}"
+    - "{{ robokitty_git_user }}"
+  register: robokitty_check_user_lookup
+  when: ansible_check_mode
+  tags: [always]
+
+- name: "CHECK | Detect first-run check mode user gap"
+  ansible.builtin.set_fact:
+    robokitty_skip_user_dependent_tasks_in_check_mode: >-
+      {{
+        ansible_check_mode and
+        (
+          robokitty_check_user_lookup.results |
+          default([]) |
+          selectattr('rc', 'ne', 0) |
+          list |
+          length
+        ) > 0
+      }}
+  tags: [always]
+
+- name: "CHECK | Report first-run check mode user-dependent skips"
+  ansible.builtin.debug:
+    msg: >-
+      Skipping user-dependent setup sections because this is a first-run
+      check-mode pass and the declared Unix users do not exist yet. Run the
+      playbook without --check once, then rerun --check for full coverage.
+  when: robokitty_skip_user_dependent_tasks_in_check_mode | default(false)
+  tags: [always]
+
 - name: "SETUP | Install base packages"
   ansible.builtin.include_tasks: base.yml
   tags: [setup]
+
+- name: "CLOUDFLARE | Configure Cloudflare Tunnel connector"
+  ansible.builtin.include_tasks: cloudflare.yml
+  tags: [cloudflare]
+  when:
+    - (robokitty_cloudflared_install | bool) or
+      (robokitty_cloudflared_manage_service | bool)
 
 - name: "SECURITY | Configure host security baseline"
   ansible.builtin.include_tasks: security.yml
@@ -18,31 +66,42 @@
 - name: "CODEX | Install and configure Codex"
   ansible.builtin.include_tasks: codex.yml
   tags: [codex]
-  when: robokitty_install_codex | bool
+  when:
+    - robokitty_install_codex | bool
+    - not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "TAKOPI | Install and configure Telegram bridge"
   ansible.builtin.include_tasks: takopi.yml
   tags: [takopi]
-  when: robokitty_install_takopi | bool
+  when:
+    - robokitty_install_takopi | bool
+    - not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "GITHUB | Install restricted GitHub broker"
   ansible.builtin.include_tasks: github_broker.yml
   tags: [github]
-  when: robokitty_github_broker_enabled | bool
+  when:
+    - robokitty_github_broker_enabled | bool
+    - not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "PODMAN | Install repo command wrapper"
   ansible.builtin.include_tasks: podman.yml
   tags: [podman]
-  when: robokitty_podman_enabled | bool
+  when:
+    - robokitty_podman_enabled | bool
+    - not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "LIVE | Configure live guidance and drift helpers"
   ansible.builtin.include_tasks: live_config.yml
   tags: [live_config]
-  when: robokitty_live_config_enabled | bool
+  when:
+    - robokitty_live_config_enabled | bool
+    - not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "REPOS | Clone configured repositories and install worktree helpers"
   ansible.builtin.include_tasks: repos.yml
   tags: [repos]
+  when: not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "STATUS | Install status and security check helpers"
   ansible.builtin.include_tasks: status.yml

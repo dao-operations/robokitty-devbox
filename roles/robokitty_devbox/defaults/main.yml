@@ -13,10 +13,14 @@ robokitty_infra_dir: /srv/robokitty-devbox/infra
 robokitty_libdir: /usr/local/lib/robokitty-devbox
 robokitty_wrappers_dir: /usr/local/lib/robokitty-devbox/wrappers
 robokitty_config_dir: /etc/robokitty-devbox
+robokitty_state_dir: /var/lib/robokitty-devbox
+robokitty_repo_config_file: "{{ robokitty_state_dir }}/repos.json"
+robokitty_worktree_source_dir: "{{ robokitty_state_dir }}/worktree-sources"
 robokitty_bindir: /usr/local/bin
 
 robokitty_packages:
   - acl
+  - apparmor
   - bash
   - bubblewrap
   - build-essential
@@ -25,6 +29,7 @@ robokitty_packages:
   - direnv
   - fd-find
   - fail2ban
+  - fish
   - git
   - git-lfs
   - gh
@@ -37,6 +42,7 @@ robokitty_packages:
   - pkg-config
   - podman
   - python3
+  - python3-apt
   - python3-cryptography
   - python3-jwt
   - python3-pip
@@ -62,10 +68,57 @@ robokitty_tailscale_auth_key: ""
 robokitty_tailscale_extra_args: "--ssh"
 robokitty_tailscale_accept_dns: true
 
+robokitty_cloudflare_access_enabled: false
+robokitty_cloudflared_install: "{{ robokitty_cloudflare_access_enabled }}"
+robokitty_cloudflared_manage_service: "{{ robokitty_cloudflare_access_enabled }}"
+robokitty_cloudflared_service_name: robokitty-cloudflared
+robokitty_cloudflared_user: cloudflared
+robokitty_cloudflared_group: cloudflared
+robokitty_cloudflared_apt_key_url: https://pkg.cloudflare.com/cloudflare-main.gpg
+robokitty_cloudflared_apt_key_path: /usr/share/keyrings/cloudflare-main.gpg
+robokitty_cloudflared_apt_repo_url: https://pkg.cloudflare.com/cloudflared
+robokitty_cloudflared_apt_suite: noble
+robokitty_cloudflared_apt_component: main
+robokitty_cloudflared_config_dir: /etc/cloudflared
+robokitty_cloudflared_token_file: /etc/cloudflared/robokitty-tunnel.token
+robokitty_cloudflared_tunnel_token: ""
+robokitty_cloudflared_metrics_address: 127.0.0.1:60123
+robokitty_cloudflared_no_autoupdate: true
+robokitty_cloudflared_require_ready: "{{ robokitty_cloudflare_access_enabled }}"
+robokitty_cloudflared_ready_retries: 12
+robokitty_cloudflared_ready_delay: 5
+
 robokitty_configure_ufw: true
 robokitty_lockdown_public_ssh: false
 robokitty_allowed_ssh_cidrs:
   - "0.0.0.0/0"
+  - "::/0"
+robokitty_harden_sshd: true
+robokitty_sshd_listen_addresses: []
+robokitty_sshd_password_authentication: "no"
+robokitty_sshd_kbd_interactive_authentication: "no"
+robokitty_sshd_challenge_response_authentication: "no"
+robokitty_sshd_permit_empty_passwords: "no"
+robokitty_sshd_pubkey_authentication: "yes"
+robokitty_sshd_permit_root_login: prohibit-password
+robokitty_sshd_x11_forwarding: "no"
+robokitty_sshd_allow_tcp_forwarding: "no"
+robokitty_sshd_permit_tunnel: "no"
+robokitty_sshd_max_auth_tries: 3
+robokitty_sshd_login_grace_time: 30
+robokitty_sshd_client_alive_interval: 300
+robokitty_sshd_client_alive_count_max: 2
+robokitty_unattended_upgrades_enabled: true
+robokitty_apt_periodic_update_package_lists: "1"
+robokitty_apt_periodic_unattended_upgrade: "1"
+robokitty_apt_periodic_autoclean_interval: "7"
+robokitty_fail2ban_sshd_enabled: true
+robokitty_fail2ban_sshd_port: ssh
+robokitty_fail2ban_sshd_backend: systemd
+robokitty_fail2ban_sshd_logpath: "%(sshd_log)s"
+robokitty_fail2ban_sshd_maxretry: 5
+robokitty_fail2ban_sshd_findtime: 10m
+robokitty_fail2ban_sshd_bantime: 1h
 
 robokitty_install_codex: true
 robokitty_codex_binary: "/home/{{ robokitty_runner_user }}/.local/bin/codex"
@@ -78,6 +131,16 @@ robokitty_codex_approval_policy: on-request
 robokitty_codex_approvals_reviewer: auto_review
 robokitty_codex_auth_method: chatgpt
 robokitty_codex_credentials_store: file
+robokitty_codex_permission_profile: robokitty-devbox
+robokitty_codex_requirements_dir: /etc/codex
+robokitty_codex_requirements_file: /etc/codex/requirements.toml
+robokitty_codex_system_config_file: /etc/codex/config.toml
+robokitty_codex_glob_scan_max_depth: 4
+robokitty_codex_project_root_markers: []
+robokitty_codex_allow_login_shell: false
+robokitty_codex_configure_user_namespaces: true
+robokitty_codex_user_max_user_namespaces: 28633
+robokitty_codex_apparmor_bwrap_profile: true
 
 robokitty_install_takopi: true
 robokitty_uv_installer_url: https://astral.sh/uv/install.sh
@@ -99,18 +162,29 @@ robokitty_takopi_topics_scope: auto
 robokitty_takopi_files_enabled: false
 
 robokitty_github_broker_enabled: true
-robokitty_github_app_id: ""
-robokitty_github_app_installation_id: ""
-robokitty_github_app_private_key_pem: ""
-robokitty_github_app_private_key_src: ""
+robokitty_github_token: ""
+robokitty_github_token_src: ""
+robokitty_github_expected_owner: ""
 robokitty_github_allowed_branch_prefix: "agent/"
 robokitty_github_default_pr_draft: true
 robokitty_github_allow_merge: false
 robokitty_github_allow_workflow_dispatch: false
-robokitty_github_submit_mode: safe-squash
+robokitty_github_allow_workflow_changes: false
+robokitty_github_maintainer_can_modify: false
+robokitty_github_submit_mode: fork-safe-squash
+robokitty_github_broker_service_name: robokitty-github-broker
+robokitty_github_broker_runtime_dir: /run/robokitty-devbox
+robokitty_github_broker_socket_path: /run/robokitty-devbox/githubctl.sock
+robokitty_github_broker_exchange_dir: "{{ robokitty_state_dir }}/githubctl-exchange"
+robokitty_github_broker_handoff_group: "{{ robokitty_runner_user }}"
 
-robokitty_git_user_name: Robokitty Devbox
+robokitty_git_user_name: Robokitty Agent
 robokitty_git_user_email: robokitty-devbox@example.invalid
+robokitty_git_commit_signing_enabled: true
+robokitty_git_signing_private_key_pem: ""
+robokitty_git_signing_private_key_src: ""
+robokitty_git_signing_public_key: ""
+robokitty_git_signing_key_path: "/home/{{ robokitty_git_user }}/.ssh/robokitty-signing-key"
 
 robokitty_repos: []
 robokitty_infra_repo: null
@@ -120,11 +194,35 @@ robokitty_start_takopi_service: true
 robokitty_enable_proc_hardening: false
 
 robokitty_podman_enabled: true
+robokitty_podman_packages:
+  - podman
+  - uidmap
+  - slirp4netns
+  - fuse-overlayfs
 robokitty_podman_default_image: docker.io/library/node:22-bookworm
 robokitty_podman_network: slirp4netns
 robokitty_podman_pull_policy: missing
+robokitty_podman_security_opts:
+  - no-new-privileges
+  - apparmor=unconfined
+robokitty_podman_enable_linger: true
+robokitty_podman_subuid_count: 65536
+robokitty_podman_subgid_count: 65536
+robokitty_podman_apparmor_userns_profiles: true
+robokitty_podman_apparmor_binaries:
+  - path: /usr/bin/podman
+    profile: usr.bin.podman
+  - path: /usr/bin/conmon
+    profile: usr.bin.conmon
+  - path: /usr/bin/crun
+    profile: usr.bin.crun
+  - path: /usr/bin/fuse-overlayfs
+    profile: usr.bin.fuse-overlayfs
+  - path: /usr/bin/slirp4netns
+    profile: usr.bin.slirp4netns
 
 robokitty_live_config_enabled: true
 robokitty_live_config_allow_agent_edits: true
 robokitty_live_config_managed_paths:
   - codex
+robokitty_live_seed_source_dir: "{{ playbook_dir }}/../codex"

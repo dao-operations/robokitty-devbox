@@ -1,0 +1,136 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  echo "usage: robokitty-bootstrap-task [repo-alias] [agent/bootstrap-test]" >&2
+  exit 2
+}
+
+die() {
+  echo "robokitty-bootstrap-task: $*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+safe_ref_name() {
+  local ref="$1"
+  [[ "$ref" =~ ^[A-Za-z0-9._/-]+$ ]] || return 1
+  [[ "$ref" != /* && "$ref" != */ && "$ref" != *..* && "$ref" != *@\{* ]]
+}
+
+safe_absolute_path() {
+  local path="$1"
+  [[ "$path" =~ ^/[A-Za-z0-9._+/-]+$ ]] || return 1
+  case "$path" in
+    *"/../"*|*"/.."|*"//"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+[ "$#" -le 2 ] || usage
+case "${1:-}" in
+  -h|--help) usage ;;
+esac
+
+require_cmd jq
+
+config="{{ robokitty_repo_config_file }}"
+repo_alias="${1:-}"
+branch="${2:-agent/bootstrap-test}"
+
+[ -r "$config" ] || die "repo config is not readable: $config"
+
+if [ -z "$repo_alias" ]; then
+  repo_alias="$(jq -er '
+    .repos
+    | to_entries
+    | map(select(.value.allow_push == true and .value.allow_pr_create == true))
+    | .[0].key // empty
+  ' "$config")" || die "no repo with allow_push and allow_pr_create is configured"
+fi
+
+[[ "$repo_alias" =~ ^[A-Za-z0-9_-]+$ ]] || die "repo alias must match [A-Za-z0-9_-]+"
+[[ "$branch" =~ ^agent/[A-Za-z0-9._-]+$ ]] || die "branch must match agent/[A-Za-z0-9._-]+"
+[[ "$branch" != *..* ]] || die "branch must not contain '..'"
+
+repo_json="$(jq -er --arg a "$repo_alias" '.repos[$a] // empty' "$config")" || \
+  die "unknown repo alias: $repo_alias"
+allow_push="$(jq -r '.allow_push == true' <<<"$repo_json")"
+allow_pr_create="$(jq -r '.allow_pr_create == true' <<<"$repo_json")"
+[ "$allow_push" = "true" ] || die "repo does not allow push through githubctl: $repo_alias"
+[ "$allow_pr_create" = "true" ] || die "repo does not allow PR creation through githubctl: $repo_alias"
+
+base="$(jq -er '.default_branch // "main"' <<<"$repo_json")"
+safe_ref_name "$base" || die "configured base branch is not safe: $base"
+repo_path="$(jq -er '.path' <<<"$repo_json")"
+safe_absolute_path "$repo_path" || die "configured repo path contains unsafe characters: $repo_path"
+workdir="$(jq -er '.workdir // empty' "$config")" || die "configured workdir is missing"
+safe_absolute_path "$workdir" || die "configured workdir contains unsafe characters: $workdir"
+infra_dir="$(jq -er '.infra_dir // empty' "$config" 2>/dev/null || true)"
+if [ -n "$infra_dir" ]; then
+  safe_absolute_path "$infra_dir" || die "configured infra_dir contains unsafe characters: $infra_dir"
+fi
+full_name="$(jq -er '.full_name // (.owner + "/" + .repo)' <<<"$repo_json")"
+slug="${branch#agent/}"
+worktree_parent="$(dirname "$repo_path")"
+if [ -n "$infra_dir" ] && [ "$repo_path" = "$infra_dir" ]; then
+  worktree_parent="$workdir"
+fi
+worktree_path="${worktree_parent}/$(basename "$repo_path").agent.${slug}"
+
+cat <<EOF
+Robokitty bootstrap task
+
+Repo:        $repo_alias ($full_name)
+Base:        $base
+Branch:      $branch
+Worktree:    $worktree_path
+
+Preflight on the devbox:
+
+  robokitty-status
+  robokitty-security-check
+  githubctl status --repo $repo_alias --format json
+
+Send this Telegram message:
+
+/$repo_alias
+Create a tiny documentation-only bootstrap change on branch $branch.
+Start by creating the managed runner-owned worktree with exactly:
+  robokitty-new-worktree $repo_alias $branch $base
+Then work only in:
+  $worktree_path
+If the worktree helper fails, stop and report the failure. Do not create a
+fallback clone and do not edit the canonical repo checkout directly.
+Only edit README.md or files under docs/.
+Do not touch secrets, credentials, sudoers, systemd units, broker scripts,
+Codex guidance files, AGENTS.md files, codex/, or .codex/.
+Before submitting, run:
+  githubctl status --repo $repo_alias --format json
+Run lightweight checks appropriate for this repo; at minimum run:
+  git diff --check
+This docs-only bootstrap smoke does not require make ci. For later infra changes
+touching playbooks, roles, templates, scripts, broker behavior, sudoers, systemd
+units, Podman runner behavior, or Codex permission/guidance wiring, run make ci
+locally in the managed worktree before githubctl submit.
+Commit locally for review.
+Create PR_BODY.md inside the worktree with the change summary and validation.
+Leave PR_BODY.md untracked; it is submit metadata, not repository content.
+Submit a draft PR through the configured agent fork using githubctl submit with:
+  --repo $repo_alias
+  --worktree $worktree_path
+  --branch $branch
+  --base $base
+  --title "Agent: bootstrap test"
+  --body-file PR_BODY.md
+  --draft
+  --format json
+After submission, run githubctl pr checks if a PR number is available.
+Report branch, PR URL, files changed, commands run, test status, known risks, and next step.
+Do not merge. Do not push protected branches. Do not use authenticated gh directly.
+If any required command fails, stop and report the exact failure instead of
+trying an alternate path.
+EOF

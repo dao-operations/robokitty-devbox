@@ -1,15 +1,43 @@
 ---
+- name: Set host name
+  ansible.builtin.hostname:
+    name: "{{ robokitty_hostname }}"
+
 - name: Install base packages
   ansible.builtin.apt:
     name: "{{ robokitty_packages }}"
     state: present
     update_cache: true
 
-- name: Enable unattended upgrades
+- name: Configure unattended upgrades schedule
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "{{ robokitty_apt_periodic_update_lists_value }}";
+      APT::Periodic::Unattended-Upgrade "{{ robokitty_apt_periodic_unattended_upgrade_value }}";
+      APT::Periodic::AutocleanInterval "{{ robokitty_apt_periodic_autoclean_value }}";
+  vars:
+    robokitty_apt_periodic_update_lists_value: >-
+      {{ robokitty_unattended_upgrades_enabled |
+      bool |
+      ternary(robokitty_apt_periodic_update_package_lists, '0') }}
+    robokitty_apt_periodic_unattended_upgrade_value: >-
+      {{ robokitty_unattended_upgrades_enabled |
+      bool |
+      ternary(robokitty_apt_periodic_unattended_upgrade, '0') }}
+    robokitty_apt_periodic_autoclean_value: >-
+      {{ robokitty_unattended_upgrades_enabled |
+      bool |
+      ternary(robokitty_apt_periodic_autoclean_interval, '0') }}
+
+- name: Manage unattended upgrades service
   ansible.builtin.service:
     name: unattended-upgrades
-    enabled: true
-    state: started
+    enabled: "{{ robokitty_unattended_upgrades_enabled | bool }}"
+    state: "{{ robokitty_unattended_upgrades_enabled | bool | ternary('started', 'stopped') }}"
 
 - name: Enable corepack if requested
   ansible.builtin.command: corepack enable

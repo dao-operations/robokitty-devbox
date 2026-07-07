@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Prepare githubctl inputs before crossing to agent-git.
+
+Runs as the Codex runner user. It may execute Git in runner-owned worktrees;
+the agent-git broker must not.
+"""
+from __future__ import annotations
+
+import argparse
+import grp
+import json
+import os
+import re
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+BODY_FILE_MAX_BYTES = 256 * 1024
+BRANCH_RE = re.compile(r'^agent/[A-Za-z0-9._-]+$')
+SECRET_SUFFIXES = {'.key', '.pem', '.p12', '.pfx'}
+HANDOFF_GROUP = '{{ robokitty_github_broker_handoff_group }}'
+SOCKET_PATH = '{{ robokitty_github_broker_socket_path }}'
+EXCHANGE_DIR = Path('{{ robokitty_github_broker_exchange_dir }}')
+MAX_RESPONSE_BYTES = 25 * 1024 * 1024
+
+
+def run(argv: list[str], *, cwd: Path | None = None, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
+    cp = subprocess.run(
+        argv,
+        cwd=str(cwd) if cwd else None,
+        input=input_bytes,
+        capture_output=True,
+        check=False,
+        env={
+            'PATH': '/usr/local/bin:/usr/bin:/bin',
+            'HOME': str(Path.home()),
+            'LANG': 'C.UTF-8',
+            'LC_ALL': 'C.UTF-8',
+            'GIT_TERMINAL_PROMPT': '0',
+        },
+    )
+    if cp.returncode != 0:
+        err = cp.stderr.decode(errors='replace')[:2000]
+        out = cp.stdout.decode(errors='replace')[:1000]
+        raise RuntimeError(f"command failed: {argv[0]} rc={cp.returncode}\nstdout={out}\nstderr={err}")
+    return cp
+
+
+def validate_branch(branch: str) -> None:
+    if not BRANCH_RE.match(branch) or '..' in branch or branch.endswith('/'):
+        raise ValueError('branch must match agent/[A-Za-z0-9._-]+')
+    if branch in {'agent/main', 'agent/master', 'agent/prod', 'agent/production'}:
+        raise ValueError('branch name too close to protected branch')
+
+
+def validate_body_file(path_arg: str, worktree: Path) -> Path:
+    raw = Path(path_arg)
+    if raw.is_absolute() or '..' in raw.parts:
+        raise ValueError('body-file must be relative and stay inside the worktree')
+    body_file = (worktree / raw).resolve()
+    worktree = worktree.resolve()
+    if not str(body_file).startswith(str(worktree) + os.sep):
+        raise ValueError('body-file must stay inside the worktree')
+    if body_file.suffix.lower() in SECRET_SUFFIXES or body_file.name.startswith('.env'):
+        raise ValueError('body-file looks secret-like')
+    if not body_file.is_file():
+        raise ValueError('body-file is not a regular file')
+    if body_file.stat().st_size > BODY_FILE_MAX_BYTES:
+        raise ValueError('body-file is too large')
+    return body_file
+
+
+def handoff_group_gid() -> int:
+    gid = grp.getgrnam(HANDOFF_GROUP).gr_gid
+    if gid != os.getegid() and gid not in os.getgroups():
+        raise RuntimeError(
+            f'process is not in {HANDOFF_GROUP}; Codex must run as '
+            'the managed runner user with the broker handoff group'
+        )
+    return gid
+
+
+def make_exchange_dir() -> Path:
+    try:
+        exchange_stat = EXCHANGE_DIR.lstat()
+    except OSError as ex:
+        raise RuntimeError(f'broker exchange directory is unavailable: {ex}') from ex
+    if not stat.S_ISDIR(exchange_stat.st_mode) or stat.S_ISLNK(exchange_stat.st_mode):
+        raise RuntimeError('broker exchange path must be a real directory')
+    path = Path(tempfile.mkdtemp(prefix='robokitty-submit.', dir=str(EXCHANGE_DIR)))
+    gid = handoff_group_gid()
+    os.chown(path, -1, gid)
+    os.chmod(path, 0o770)
+    return path
+
+
+def write_exchange_file(path: Path, data: bytes) -> None:
+    path.write_bytes(data)
+    gid = handoff_group_gid()
+    os.chown(path, -1, gid)
+    os.chmod(path, 0o660)
+
+
+def base_ref(worktree: Path, base: str) -> str:
+    candidates = [f'origin/{base}', base]
+    for candidate in candidates:
+        cp = subprocess.run(
+            ['git', '-C', str(worktree), 'rev-parse', '--verify', candidate + '^{commit}'],
+            capture_output=True,
+            check=False,
+        )
+        if cp.returncode == 0:
+            return candidate
+    raise ValueError(f'base branch not available locally: {base}')
+
+
+def dirty_status_entries(worktree: Path, allowed_untracked_file: Path) -> list[str]:
+    rel_allowed = allowed_untracked_file.relative_to(worktree).as_posix()
+    status = run([
+        'git', '-C', str(worktree), 'status', '--porcelain=v1',
+        '--untracked-files=all', '-z',
+    ]).stdout
+    dirty: list[str] = []
+    entries = status.split(b'\0')
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        if not entry:
+            index += 1
+            continue
+        text = entry.decode('utf-8', errors='surrogateescape')
+        code = text[:2]
+        path = text[3:] if len(text) > 3 else ''
+        if not (code == '??' and path == rel_allowed):
+            dirty.append(text)
+        if 'R' in code or 'C' in code:
+            index += 1
+        index += 1
+    return dirty
+
+
+def prepare_submit(args: argparse.Namespace) -> list[str]:
+    validate_branch(args.branch)
+    worktree = Path(args.worktree).resolve()
+    body_file = validate_body_file(args.body_file, worktree)
+    branch = run(['git', '-C', str(worktree), 'branch', '--show-current']).stdout.decode().strip()
+    if branch != args.branch:
+        raise ValueError(f'worktree is on {branch}, expected {args.branch}')
+    if dirty_status_entries(worktree, body_file):
+        raise ValueError(
+            'worktree has uncommitted changes other than body-file; '
+            'commit locally before submit'
+        )
+    ref = base_ref(worktree, args.base)
+    patch = run([
+        'git', '-C', str(worktree), '--no-pager', 'diff', '--binary',
+        '--no-ext-diff', '--no-textconv', f'{ref}...HEAD',
+    ]).stdout
+    if not patch.strip():
+        raise ValueError('empty diff; nothing to submit')
+
+    exchange = make_exchange_dir()
+    patch_file = exchange / 'changes.patch'
+    prepared_body = exchange / 'body.md'
+    write_exchange_file(patch_file, patch)
+    write_exchange_file(prepared_body, body_file.read_bytes())
+
+    broker_args = [
+        'submit',
+        '--repo', args.repo,
+        '--worktree', str(worktree),
+        '--branch', args.branch,
+        '--base', args.base,
+        '--title', args.title,
+        '--body-file', str(prepared_body),
+        '--patch-file', str(patch_file),
+        '--format', args.format,
+    ]
+    if args.draft:
+        broker_args.append('--draft')
+    return broker_args
+
+
+def prepare_comment(args: argparse.Namespace) -> list[str]:
+    worktree = Path.cwd().resolve()
+    body_file = validate_body_file(args.body_file, worktree)
+    exchange = make_exchange_dir()
+    prepared_body = exchange / 'body.md'
+    write_exchange_file(prepared_body, body_file.read_bytes())
+    return [
+        'pr',
+        'comment',
+        '--repo', args.repo,
+        '--number', str(args.number),
+        '--body-file', str(prepared_body),
+        '--format', args.format,
+    ]
+
+
+def call_broker(args: list[str]) -> int:
+    request = json.dumps({'argv': args}).encode('utf-8')
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.connect(SOCKET_PATH)
+            sock.sendall(request)
+            sock.shutdown(socket.SHUT_WR)
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > MAX_RESPONSE_BYTES:
+                    raise RuntimeError('broker response is too large')
+    except OSError as ex:
+        print(f'githubctl broker unavailable at {SOCKET_PATH}: {ex}', file=sys.stderr)
+        return 1
+
+    response = json.loads(b''.join(chunks).decode('utf-8'))
+    if response.get('stdout'):
+        sys.stdout.write(response['stdout'])
+    if response.get('stderr'):
+        sys.stderr.write(response['stderr'])
+    return int(response.get('rc', 1))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog='githubctl-prep')
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    submit = sub.add_parser('submit')
+    submit.add_argument('--repo', required=True)
+    submit.add_argument('--worktree', required=True)
+    submit.add_argument('--branch', required=True)
+    submit.add_argument('--base', required=True)
+    submit.add_argument('--title', required=True)
+    submit.add_argument('--body-file', required=True)
+    submit.add_argument('--draft', action='store_true')
+    submit.add_argument('--format', default='json', choices=['json'])
+
+    status = sub.add_parser('status')
+    status.add_argument('--repo', required=True)
+    status.add_argument('--format', default='json', choices=['json'])
+
+    audit = sub.add_parser('audit')
+    audit.add_argument('--limit', type=int, default=20)
+    audit.add_argument('--format', default='json', choices=['json'])
+
+    pr = sub.add_parser('pr')
+    prsub = pr.add_subparsers(dest='prcmd', required=True)
+    view = prsub.add_parser('view')
+    view.add_argument('--repo', required=True)
+    view.add_argument('--number', type=int, required=True)
+    view.add_argument('--format', default='json', choices=['json'])
+    checks = prsub.add_parser('checks')
+    checks.add_argument('--repo', required=True)
+    checks.add_argument('--number', type=int, required=True)
+    checks.add_argument('--format', default='json', choices=['json'])
+    comment = prsub.add_parser('comment')
+    comment.add_argument('--repo', required=True)
+    comment.add_argument('--number', type=int, required=True)
+    comment.add_argument('--body-file', required=True)
+    comment.add_argument('--format', default='json', choices=['json'])
+
+    args = parser.parse_args(argv)
+    try:
+        if args.cmd == 'submit':
+            return call_broker(prepare_submit(args))
+        if args.cmd == 'status':
+            return call_broker(['status', '--repo', args.repo, '--format', args.format])
+        if args.cmd == 'audit':
+            return call_broker(['audit', '--limit', str(args.limit), '--format', args.format])
+        if args.cmd == 'pr' and args.prcmd == 'view':
+            return call_broker([
+                'pr', 'view', '--repo', args.repo, '--number', str(args.number),
+                '--format', args.format,
+            ])
+        if args.cmd == 'pr' and args.prcmd == 'checks':
+            return call_broker([
+                'pr', 'checks', '--repo', args.repo, '--number', str(args.number),
+                '--format', args.format,
+            ])
+        if args.cmd == 'pr' and args.prcmd == 'comment':
+            return call_broker(prepare_comment(args))
+    except Exception as ex:
+        print(f'githubctl prep failed: {ex}', file=sys.stderr)
+        return 1
+    return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

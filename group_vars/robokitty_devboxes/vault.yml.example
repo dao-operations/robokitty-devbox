@@ -2,11 +2,16 @@
 # Store these with ansible-vault. Do not commit real values.
 robokitty_takopi_bot_token: "VAULT_ME"
 
-# Optional; only if installing/authing Tailscale from Ansible.
-robokitty_tailscale_auth_key: "VAULT_ME_OPTIONAL"
+# Optional; production inventory uses vault_robokitty_cloudflared_tunnel_token
+# under inventories/production/group_vars/robokitty_devboxes/vault.yml.
+robokitty_cloudflared_tunnel_token: "VAULT_ME_OPTIONAL"
 
-# Option B for GitHub App key storage. Option A is `robokitty_github_app_private_key_src`.
-robokitty_github_app_private_key_pem: |
-  -----BEGIN RSA PRIVATE KEY-----
+# Store the third GitHub identity PAT here, or use robokitty_github_token_src in
+# a private inventory.
+robokitty_github_token: "github_pat_VAULT_ME"
+
+robokitty_git_signing_private_key_pem: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
   VAULT_ME
-  -----END RSA PRIVATE KEY-----
+  -----END OPENSSH PRIVATE KEY-----
+robokitty_git_signing_public_key: "ssh-ed25519 AAAA_VAULT_ME robokitty-agent-signing"

@@ -1,0 +1,17 @@
+# Managed by Ansible. Robokitty SSH hardening baseline.
+{% for address in robokitty_sshd_listen_addresses %}
+ListenAddress {{ address }}
+{% endfor %}
+PasswordAuthentication {{ robokitty_sshd_password_authentication }}
+KbdInteractiveAuthentication {{ robokitty_sshd_kbd_interactive_authentication }}
+ChallengeResponseAuthentication {{ robokitty_sshd_challenge_response_authentication }}
+PermitEmptyPasswords {{ robokitty_sshd_permit_empty_passwords }}
+PubkeyAuthentication {{ robokitty_sshd_pubkey_authentication }}
+PermitRootLogin {{ robokitty_sshd_permit_root_login }}
+X11Forwarding {{ robokitty_sshd_x11_forwarding }}
+AllowTcpForwarding {{ robokitty_sshd_allow_tcp_forwarding }}
+PermitTunnel {{ robokitty_sshd_permit_tunnel }}
+MaxAuthTries {{ robokitty_sshd_max_auth_tries }}
+LoginGraceTime {{ robokitty_sshd_login_grace_time }}
+ClientAliveInterval {{ robokitty_sshd_client_alive_interval }}
+ClientAliveCountMax {{ robokitty_sshd_client_alive_count_max }}

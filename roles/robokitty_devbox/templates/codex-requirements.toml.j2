@@ -1,0 +1,9 @@
+# Managed by robokitty-devbox. Do not edit directly.
+allowed_approval_policies = ["{{ robokitty_codex_approval_policy }}"]
+allowed_approvals_reviewers = ["{{ robokitty_codex_approvals_reviewer }}"]
+allowed_sandbox_modes = ["read-only", "workspace-write"]
+default_permissions = "{{ robokitty_codex_permission_profile }}"
+
+[allowed_permission_profiles]
+":read-only" = true
+"{{ robokitty_codex_permission_profile }}" = true

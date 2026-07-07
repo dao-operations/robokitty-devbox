@@ -30,5 +30,7 @@
     group: root
     mode: "0755"
   loop:
-    - { src: robokitty-new-worktree.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-new-worktree" }
-    - { src: robokitty-delete-worktree.sh.j2, dest: "{{ robokitty_bindir }}/robokitty-delete-worktree" }
+    - src: robokitty-new-worktree.sh.j2
+      dest: "{{ robokitty_bindir }}/robokitty-new-worktree"
+    - src: robokitty-delete-worktree.sh.j2
+      dest: "{{ robokitty_bindir }}/robokitty-delete-worktree"

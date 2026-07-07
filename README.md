@@ -74,3 +74,7 @@ Use the prompts in `prompts/` for structured implementation, review, and integra
 ## Current status
 
 This is a project skeleton and implementation brief, not a finished Ansible role. The role contains enough scaffolding and templates to let Codex begin implementation without re-litigating the architecture.
+
+## Bootstrap smoke check
+
+This repository supports a documentation-only bootstrap smoke task to verify that a managed Codex worktree can make a small change, run lightweight validation, commit locally, and submit a draft PR through `githubctl`.

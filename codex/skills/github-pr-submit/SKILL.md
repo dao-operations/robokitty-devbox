@@ -5,7 +5,8 @@ description: Submit an agent branch as a draft GitHub PR through the restricted 
 
 # GitHub PR submit skill
 
-Use this when a task is ready to leave the devbox as a GitHub draft PR.
+Use this when a task is ready to leave the devbox as a GitHub draft PR through
+the configured agent identity fork.
 
 ## Preconditions
 
@@ -37,6 +38,10 @@ githubctl submit \
   --format json
 ```
 
+Use the `githubctl` wrapper normally. Do not call `sudo`, `agent-git`, or the
+broker implementation directly. Do not connect to the broker socket directly.
+The managed `githubctl` wrapper handles the broker handoff.
+
 After submission:
 
 ```bash
@@ -48,4 +53,5 @@ githubctl pr checks --repo <alias> --number <pr-number> --format json
 - Do not run authenticated `gh` directly.
 - Do not merge PRs.
 - Do not dispatch workflows.
+- Do not edit `.github/workflows/`.
 - Do not push protected branches.

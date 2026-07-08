@@ -23,12 +23,18 @@ To sync live drift back to the infra repo:
 
 ```bash
 robokitty-drift-report || true
-robokitty-sync-live-to-infra
-cd /srv/robokitty-devbox/infra
+robokitty-sync-live-to-infra agent/sync-live-guidance-YYYY-MM-DD main
+cd /srv/robokitty-devbox/work/infra.agent.sync-live-guidance-YYYY-MM-DD
 git diff -- codex
 ```
 
-Then create an `agent/sync-live-guidance-YYYY-MM-DD` branch and submit a PR with `githubctl`.
+Then commit the `codex/` changes in that worktree and submit a PR with
+`githubctl`.
+
+The P0 sync helper accepts only `AGENTS.md` and `skills/<name>/SKILL.md`.
+It ignores Codex's generated `skills/.system` cache and never syncs that cache
+back to the infra repo. Move broader support files through a normal infra-repo
+PR.
 
 ## Boundaries
 

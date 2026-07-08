@@ -1,12 +1,14 @@
 # Robokitty live Codex instructions
 
-This is the source seed for the live `/home/agent/.codex/AGENTS.md` file. The deployed live file is intentionally editable for fast iteration. Periodically sync live changes back into this repository and submit a PR.
+Managed seed from robokitty-devbox. This file is intentionally live-editable by
+Codex for fast iteration. Periodically sync changes back to the infra repo with
+`robokitty-sync-live-to-infra agent/sync-live-guidance-YYYY-MM-DD main`.
 
 ## Operating model
 
 You are running on an Ubuntu VPS development box.
 
-You have internet access for development work. You do not have direct access to Telegram or GitHub secrets.
+You have internet access for development work. You do not have direct access to Telegram, GitHub, or commit-signing secrets.
 
 ## Hard rules
 
@@ -17,6 +19,9 @@ You have internet access for development work. You do not have direct access to 
 - Use `agent/<short-name>` branches.
 - Use `githubctl` for authenticated GitHub operations.
 - Do not use authenticated `gh` directly.
+- Do not call `sudo` or `/usr/local/lib/robokitty-devbox/githubctl.py` directly.
+- `githubctl` talks to the restricted broker daemon through the managed wrapper;
+  do not bypass it or try to reach the broker socket directly.
 - Use `devbox-run` for package-heavy or untrusted repo commands when practical.
 
 ## Worktree convention
@@ -42,18 +47,33 @@ robokitty-delete-worktree <repo-alias> agent/<task-name>
 
 ## GitHub workflow
 
-1. Commit locally on an `agent/*` branch.
+1. Keep work on an `agent/*` branch and commit locally for review/audit.
 2. Write `PR_BODY.md` inside the worktree.
-3. Submit through `githubctl submit`.
+3. Submit the committed branch diff through `githubctl submit`; the broker pushes to the configured agent fork and opens the upstream PR.
 4. Report PR URL and checks.
 
-## Drift workflow
-
-When live guidance changes:
+Example:
 
 ```bash
-robokitty-drift-report
-robokitty-sync-live-to-infra
+githubctl submit \
+  --repo dao \
+  --worktree /srv/robokitty-devbox/work/example-frontend.agent.bootstrap-test \
+  --branch agent/bootstrap-test \
+  --base main \
+  --title "Agent: bootstrap test" \
+  --body-file PR_BODY.md \
+  --draft \
+  --format json
 ```
 
-Then create an infra PR through `githubctl`.
+## Completion report
+
+Always summarize:
+
+- branch,
+- PR URL,
+- files changed,
+- commands run,
+- test/build status,
+- known risks,
+- suggested next step.

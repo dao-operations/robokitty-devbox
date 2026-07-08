@@ -63,8 +63,9 @@ Then send the generated Telegram message. It will look like:
 Create a tiny README.md or docs/ change on branch agent/bootstrap-test.
 Use the managed worktree helper and stop if it fails.
 Run the lightweight checks, including git diff --check.
+Run the pre-submit checklist: git status --short and git diff --stat.
 Commit locally for review.
-Create PR_BODY.md and leave it untracked.
+Create PR_BODY.md with Summary, Testing, Risks, and Notes sections, and leave it untracked.
 Submit a draft PR using githubctl.
 Report the PR URL.
 Do not merge.

@@ -29,6 +29,20 @@ Each repo may set `container_image` and `container_workdir` in repo config.
 `container_workdir` is a safe relative path inside the selected worktree and
 defaults to `/workspace`. It does not add mounts or arbitrary Podman flags.
 
+Use non-login shells inside language images unless the repo specifically
+requires login-shell behavior. Login shells may reset image-provided `PATH`
+entries such as `/usr/local/cargo/bin` in the official Rust images.
+
+Official language images may omit optional developer components. For example,
+the official Rust image can provide `rustc` and `cargo` without `rustfmt`; run
+checks that match the configured image, or use a repo-specific image with the
+missing component preinstalled.
+
+Rootless containers run with the runner UID through `--userns=keep-id`, so
+commands should not try to mutate image-owned global tool directories such as
+`/usr/local/lib/node_modules`. If a repo pins a package manager version, install
+that tool into `/tmp` or the worktree for the single `devbox-run` invocation.
+
 ## Container constraints
 
 The wrapper should:

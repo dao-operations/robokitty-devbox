@@ -168,10 +168,10 @@ names or clone URLs are sensitive enough to vault. The checked-in `owner` and
 `repo` fields are the upstream PR target. The fork owner is the authenticated
 GitHub PAT login reported by `githubctl status`.
 
-The production default keeps `robokitty_repos` empty and configures only the
-`robokitty-infra` alias for this repository. Use that alias for the first
-bootstrap smoke. Add target application repos only after the base devbox is
-healthy:
+The production inventory configures the `robokitty-infra` alias for this
+repository plus any target application repos under `robokitty_repos`. Use the
+infra alias for the first bootstrap smoke, then add or adjust target application
+repos after the base devbox is healthy:
 
 ```yaml
 robokitty_repos:
@@ -187,6 +187,33 @@ robokitty_repos:
     allow_pr_create: true
     container_image: docker.io/library/node:22-bookworm
     # Optional. Use a safe relative path for monorepos, for example frontend.
+    container_workdir: .
+```
+
+For a private repository, keep the same shape but add `private: true`.
+Ansible will not try to clone it as the Codex runner. Instead, after deploy,
+run `sudo -u agent -- githubctl repo sync --repo <repo-alias> --format json`.
+The broker reads the GitHub PAT as `agent-git`, fetches the private upstream
+into a temporary bundle, and the runner imports that bundle into a
+credential-free local source repo under
+`/var/lib/robokitty-devbox/worktree-sources`.
+
+Example private repo entry:
+
+```yaml
+robokitty_repos:
+  - alias: private-app
+    owner: dao-operations
+    repo: private-app
+    private: true
+    default_branch: master
+    clone_url: https://github.com/dao-operations/private-app.git
+    path: /srv/robokitty-devbox/work/private-app
+    allowed_base_branches:
+      - master
+    allow_push: true
+    allow_pr_create: true
+    container_image: docker.io/library/rust:1.88-bookworm
     container_workdir: .
 ```
 
@@ -263,6 +290,53 @@ false, update `vault_robokitty_github_expected_owner`, leave it empty, or
 replace the PAT with one from the expected GitHub login before running the
 Telegram smoke.
 
+For repos configured with `private: true`, sync the local credential-free
+checkout before creating worktrees:
+
+```bash
+sudo -u agent -- githubctl repo sync --repo <repo-alias> --format json
+```
+
+Repeat the sync when you need the devbox to see new upstream commits. The
+runner still cannot read the GitHub PAT; it only reads the local source repo
+materialized by the brokered sync.
+
+For production repo onboarding smoke tests, create a temporary worktree, run
+the repo's lightweight checks through `devbox-run`, and delete the worktree.
+Use non-login shells inside language images so image-provided `PATH` entries are
+preserved. For example, `gov-apps-stats` uses the official Rust image. The
+official image provides `rustc` and `cargo`, but does not necessarily include
+the optional `rustfmt` component, so the onboarding smoke uses the locked test
+suite rather than `cargo fmt`:
+
+```bash
+cd /tmp
+
+sudo -u agent -- fish -lc '
+  set wt (robokitty-new-worktree gov-apps-stats agent/onboarding-gov-apps-stats master)
+  devbox-run gov-apps-stats $wt -- bash -c "export PATH=/usr/local/cargo/bin:\$PATH && rustc --version && cargo --version && cargo test --locked"
+  robokitty-delete-worktree gov-apps-stats agent/onboarding-gov-apps-stats --force --delete-local-branch
+'
+```
+
+If formatting must be part of the repo's normal validation, use a repo-specific
+image with the matching `rustfmt` component preinstalled rather than installing
+toolchain components globally during `devbox-run`.
+
+For `governance-apps`, keep the npm version pin local to the disposable
+container. Do not install npm globally, because `devbox-run` runs as the runner
+UID and should not mutate `/usr/local` in the image:
+
+```bash
+cd /tmp
+
+sudo -u agent -- fish -lc '
+  set wt (robokitty-new-worktree governance-apps agent/onboarding-governance-apps master)
+  devbox-run governance-apps $wt -- bash -c "npm install --prefix /tmp/npm-tools npm@11.14.0 >/dev/null && export PATH=/tmp/npm-tools/node_modules/.bin:\$PATH && npm --version && npm ci --ignore-scripts && npm run validate:deps && npm run typecheck"
+  robokitty-delete-worktree governance-apps agent/onboarding-governance-apps --force --delete-local-branch
+'
+```
+
 Then send the generated Telegram message. It will look like:
 
 ```text
@@ -270,8 +344,9 @@ Then send the generated Telegram message. It will look like:
 Create a tiny README.md or docs/ change on branch agent/bootstrap-test.
 Use the managed worktree helper and stop if it fails.
 Run lightweight checks, including git diff --check.
+Run the pre-submit checklist: git status --short and git diff --stat.
 Commit locally for review.
-Create PR_BODY.md and leave it untracked.
+Create PR_BODY.md with Summary, Testing, Risks, and Notes sections, and leave it untracked.
 Submit a draft PR using githubctl.
 Report the PR URL.
 Do not merge.
@@ -290,6 +365,10 @@ The expected result is a draft PR from the agent user's fork, with an
 `agent/bootstrap-test` branch as the PR head, and a Telegram summary that
 includes the branch, PR URL, changed files, commands run, check status, risks,
 and next step.
+
+Durable workflow or guidance changes discovered during a product repo task
+should be submitted separately through the infra repo. Do not bundle them into
+the product repo PR.
 
 ## 9. Weekly drift sync
 

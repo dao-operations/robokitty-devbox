@@ -17,7 +17,7 @@ Telegram -> Codex -> worktree -> checks -> commit -> githubctl -> draft PR -> Te
 
 ## Workflow
 
-1. Create the requested worktree:
+1. Inspect current repo state and create the requested worktree:
 
 ```bash
 robokitty-new-worktree <repo-alias> agent/bootstrap-test <base-branch>
@@ -43,23 +43,46 @@ git diff --check
 
 Use repo-specific checks when obvious and cheap.
 
-4. Commit locally on `agent/bootstrap-test`.
+4. Before submitting, run the pre-submit checklist:
 
-5. Create `PR_BODY.md` in the worktree with:
+```bash
+git status --short
+git diff --stat
+```
 
-- summary,
-- validation commands and results,
-- known risks,
-- note that this is a bootstrap smoke PR.
+Confirm that the diff contains only the intended docs change, no secrets, no
+generated junk, and no unrelated dirty files.
 
-6. Submit a draft PR through `githubctl submit`.
+5. Commit locally on `agent/bootstrap-test`.
+
+6. Create `PR_BODY.md` in the worktree and leave it untracked:
+
+```markdown
+## Summary
+
+- ...
+
+## Testing
+
+- ...
+
+## Risks
+
+- ...
+
+## Notes
+
+- Bootstrap smoke PR.
+```
+
+7. Submit a draft PR through `githubctl submit`.
 
 Use the `githubctl` wrapper normally. Do not call `sudo`, `agent-git`, or the
 broker implementation directly. Do not connect to the broker socket directly.
 The managed `githubctl` wrapper handles the broker handoff.
 Run `githubctl status --repo <repo-alias> --format json` before submitting.
 
-7. If a PR number is available, run `githubctl pr checks`.
+8. If a PR number is available, run `githubctl pr checks`.
 
 ## Boundaries
 
@@ -68,6 +91,9 @@ Run `githubctl status --repo <repo-alias> --format json` before submitting.
 - Do not modify `AGENTS.md`, `codex/`, `.codex/`, or live guidance files.
 - Do not run authenticated `gh` directly.
 - Do not merge.
+- If you discover durable workflow guidance improvements, report them as a
+  separate infra/guidance follow-up rather than bundling them into the product
+  repo bootstrap PR.
 
 ## Final report
 

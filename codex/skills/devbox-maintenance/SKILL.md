@@ -7,6 +7,10 @@ description: Maintain live Robokitty guidance and sync drift back to the infra r
 
 Use this for improving AGENTS.md, skills, docs, and helper guidance.
 
+Keep durable workflow improvements separate from product-code PRs. If a product
+task reveals a better workflow, report the observation there, then make the
+guidance change through a dedicated infra/guidance task.
+
 ## Fast live iteration
 
 Non-secret live guidance may be edited directly under:
@@ -30,6 +34,26 @@ git diff -- codex
 
 Then commit the `codex/` changes in that worktree and submit a PR with
 `githubctl`.
+
+Use a PR body with:
+
+```markdown
+## Summary
+
+- ...
+
+## Testing
+
+- ...
+
+## Risks
+
+- ...
+
+## Notes
+
+- ...
+```
 
 The P0 sync helper accepts only `AGENTS.md` and `skills/<name>/SKILL.md`.
 It ignores Codex's generated `skills/.system` cache and never syncs that cache

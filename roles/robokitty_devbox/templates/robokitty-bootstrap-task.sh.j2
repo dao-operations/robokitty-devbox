@@ -116,8 +116,16 @@ This docs-only bootstrap smoke does not require make ci. For later infra changes
 touching playbooks, roles, templates, scripts, broker behavior, sudoers, systemd
 units, Podman runner behavior, or Codex permission/guidance wiring, run make ci
 locally in the managed worktree before githubctl submit.
+Before submitting, run this pre-submit checklist:
+  git status --short
+  git diff --stat
+Confirm that no secrets, generated junk, or unrelated dirty files are included.
 Commit locally for review.
-Create PR_BODY.md inside the worktree with the change summary and validation.
+Create PR_BODY.md inside the worktree with this structure:
+  ## Summary
+  ## Testing
+  ## Risks
+  ## Notes
 Leave PR_BODY.md untracked; it is submit metadata, not repository content.
 Submit a draft PR through the configured agent fork using githubctl submit with:
   --repo $repo_alias
@@ -131,6 +139,8 @@ Submit a draft PR through the configured agent fork using githubctl submit with:
 After submission, run githubctl pr checks if a PR number is available.
 Report branch, PR URL, files changed, commands run, test status, known risks, and next step.
 Do not merge. Do not push protected branches. Do not use authenticated gh directly.
+Do not bundle durable workflow or guidance changes into this product/docs PR;
+report those as a separate infra follow-up.
 If any required command fails, stop and report the exact failure instead of
 trying an alternate path.
 EOF

@@ -15,10 +15,10 @@ PLAYBOOK ?= playbooks/robokitty_devbox.yml
 
 ANSIBLE_ENV := ANSIBLE_HOME=$(ANSIBLE_HOME) ANSIBLE_LOCAL_TEMP=$(ANSIBLE_LOCAL_TEMP) ANSIBLE_REMOTE_TEMP=$(ANSIBLE_REMOTE_TEMP) ANSIBLE_COLLECTIONS_PATH=$(ANSIBLE_COLLECTIONS_PATH)
 
-.PHONY: help prepare-ansible install-dev install-collections lint-yaml lint-ansible syntax codex-requirements-check sudoers-check github-broker-check worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check cloud-init-check ci
+.PHONY: help prepare-ansible install-dev install-collections lint-yaml lint-ansible syntax codex-requirements-check sudoers-check github-broker-check deploy-runner-check ansible-requirements-check ansible-secret-no-log-check worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check cloud-init-check ci
 
 help:
-	@echo "Targets: install-dev lint-yaml lint-ansible syntax worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check cloud-init-check ci"
+	@echo "Targets: install-dev lint-yaml lint-ansible syntax worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check deploy-runner-check ansible-requirements-check ansible-secret-no-log-check cloud-init-check ci"
 	@echo "Variables: INVENTORY=$(INVENTORY) PLAYBOOK=$(PLAYBOOK)"
 
 prepare-ansible:
@@ -59,6 +59,17 @@ github-broker-check: prepare-ansible
 	@command -v "$(UV)" >/dev/null || { echo "error: $(UV) not found; run 'make install-dev'"; exit 127; }
 	$(ANSIBLE_ENV) UV="$(UV)" scripts/check-github-broker-templates.sh
 
+deploy-runner-check: prepare-ansible
+	$(ANSIBLE_ENV) scripts/check-deploy-runner-templates.sh
+
+ansible-requirements-check: prepare-ansible
+	@command -v "$(UV)" >/dev/null || { echo "error: $(UV) not found; run 'make install-dev'"; exit 127; }
+	$(ANSIBLE_ENV) UV="$(UV)" scripts/check-ansible-requirements.sh
+
+ansible-secret-no-log-check: prepare-ansible
+	@command -v "$(UV)" >/dev/null || { echo "error: $(UV) not found; run 'make install-dev'"; exit 127; }
+	$(ANSIBLE_ENV) UV="$(UV)" scripts/check-ansible-secret-no-log.sh
+
 worktree-helpers-check: prepare-ansible
 	$(ANSIBLE_ENV) scripts/check-worktree-helpers.sh
 
@@ -74,4 +85,4 @@ bootstrap-task-check: prepare-ansible
 cloud-init-check:
 	scripts/render-cloud-init.sh --check-template
 
-ci: lint-yaml lint-ansible syntax codex-requirements-check sudoers-check github-broker-check worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check cloud-init-check
+ci: lint-yaml lint-ansible syntax codex-requirements-check sudoers-check github-broker-check deploy-runner-check ansible-requirements-check ansible-secret-no-log-check worktree-helpers-check devbox-run-check live-config-helpers-check bootstrap-task-check cloud-init-check

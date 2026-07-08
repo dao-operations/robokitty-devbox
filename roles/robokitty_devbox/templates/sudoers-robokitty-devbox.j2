@@ -1,8 +1,21 @@
 # Managed by robokitty-devbox. Do not edit directly.
 Defaults:{{ robokitty_bridge_user }} !requiretty
 Defaults:{{ robokitty_runner_user }} !requiretty
+{% if robokitty_deploy_runner_enabled | bool %}
+Defaults:{{ robokitty_actions_runner_user }} !requiretty
+Defaults:{{ robokitty_actions_runner_user }} env_reset
+Defaults:{{ robokitty_actions_runner_user }} env_delete += "BASH_ENV ENV CDPATH GLOBIGNORE SHELLOPTS"
+Defaults:{{ robokitty_actions_runner_user }} secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+{% endif %}
 
 # Takopi may run exactly the Codex binary as the runner user.
 # The runner keeps its normal primary group for rootless Podman and broker
 # handoff from Codex command sandboxes.
 {{ robokitty_bridge_user }} ALL=({{ robokitty_runner_user }}) NOPASSWD: {{ robokitty_codex_binary }}
+{% if robokitty_deploy_runner_enabled | bool %}
+
+# GitHub Actions may trigger only the fixed infra deploy wrapper. Sudoers
+# cannot regex-restrict the triggering SHA argument, so the wrapper rejects
+# missing or non-SHA arguments before doing privileged work.
+{{ robokitty_actions_runner_user }} ALL=(root) NOPASSWD: {{ robokitty_deploy_runner_wrapper }}
+{% endif %}

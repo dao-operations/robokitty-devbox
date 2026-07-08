@@ -1,0 +1,46 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+ALLOWED_COLLECTIONS = {"community.general"}
+ALLOWED_SOURCES = {None, "https://galaxy.ansible.com"}
+VERSION_RE = re.compile(r"^[0-9]+[.][0-9]+[.][0-9]+$")
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"error: {message}")
+
+
+def main() -> None:
+    if len(sys.argv) != 2:
+        fail("usage: robokitty-check-ansible-requirements <requirements.yml>")
+
+    path = Path(sys.argv[1])
+    data = yaml.safe_load(path.read_text())
+    collections = data.get("collections") if isinstance(data, dict) else None
+    if not isinstance(collections, list) or not collections:
+        fail("requirements.yml must contain a non-empty collections list")
+
+    for index, collection in enumerate(collections):
+        if not isinstance(collection, dict):
+            fail(f"collection {index} must be a mapping")
+
+        name = collection.get("name")
+        version = collection.get("version")
+        source = collection.get("source")
+
+        if name not in ALLOWED_COLLECTIONS:
+            fail(f"collection {index} is not allowlisted: {name!r}")
+        if not isinstance(version, str) or not VERSION_RE.fullmatch(version):
+            fail(f"collection {name} must use an exact X.Y.Z version")
+        if source not in ALLOWED_SOURCES:
+            fail(f"collection {name} uses a non-allowlisted source: {source!r}")
+
+
+if __name__ == "__main__":
+    main()

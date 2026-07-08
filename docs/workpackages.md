@@ -173,3 +173,35 @@ Tasks:
 - Log/audit trail for `githubctl`.
 - Multi-user Telegram group topics.
 - Dedicated ChatGPT workspace identity.
+
+## WP11 — Self-hosted deploy runner pilot
+
+Tasks:
+
+- Document the deploy-runner security model in an ADR.
+- Keep Cloudflare-first ingress unchanged; the runner must use outbound GitHub
+  connectivity only.
+- Add a disabled-by-default GitHub Actions self-hosted runner managed by
+  Ansible.
+- Split GitHub job execution from deploy secret custody:
+  `agent-actions` runs workflows, `agent-deploy` owns the vault password and
+  clean deploy checkout.
+- Add a fixed deploy wrapper that requires the workflow triggering SHA, ignores
+  `$GITHUB_WORKSPACE`, fetches the protected upstream branch into a clean
+  deploy checkout, binds deploy to the workflow triggering SHA, and applies
+  Ansible through local connection with a scrubbed environment.
+- Extend `robokitty-security-check` and template checks for the deploy runner.
+- Document the required human-authored GitHub workflow because `githubctl`
+  intentionally blocks workflow file edits.
+
+Exit criteria:
+
+- Codex cannot read the deploy vault password.
+- The Actions runner cannot read the deploy vault password.
+- Codex cannot invoke deploy.
+- The Actions runner can invoke only the fixed deploy wrapper through sudo.
+- No inbound firewall, SSH, or webhook access is added.
+- The deploy workflow runs only after protected-branch merge and Environment
+  approval.
+- The deploy wrapper fails if the branch head no longer matches the triggering
+  SHA.

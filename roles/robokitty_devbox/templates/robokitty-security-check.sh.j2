@@ -68,6 +68,91 @@ github_signing_public_key_stat="$(stat -c '%a %U %G' "$github_signing_public_key
 ok "Git signing key files are broker-owned"
 {% endif %}
 
+{% if robokitty_deploy_runner_enabled | bool %}
+deploy_vault_file="{{ robokitty_deploy_runner_vault_password_file }}"
+
+echo "[5d] runner cannot read deploy vault password"
+if sudo -n -u {{ robokitty_runner_user }} test -r "$deploy_vault_file"; then
+  fail "runner can read deploy vault password"
+else
+  ok "runner cannot read deploy vault password"
+fi
+
+echo "[5e] Actions runner cannot read deploy vault password"
+if sudo -n -u {{ robokitty_actions_runner_user }} test -r "$deploy_vault_file"; then
+  fail "Actions runner can read deploy vault password"
+else
+  ok "Actions runner cannot read deploy vault password"
+fi
+
+echo "[5f] deploy vault password file is deploy-owned only"
+deploy_vault_stat="$(stat -c '%a %U %G' "$deploy_vault_file")"
+[ "$deploy_vault_stat" = "400 {{ robokitty_deploy_runner_user }} {{ robokitty_deploy_runner_user }}" ] || \
+  fail "deploy vault password ownership or mode is unsafe: $deploy_vault_stat"
+[ ! -L "$deploy_vault_file" ] || fail "deploy vault password file must not be a symlink"
+ok "deploy vault password file is owned by {{ robokitty_deploy_runner_user }} with mode 0400"
+
+echo "[5f.1] deploy user cannot log in interactively"
+deploy_shell="$(getent passwd {{ robokitty_deploy_runner_user }} | cut -d: -f7)"
+[ "$deploy_shell" = "/usr/sbin/nologin" ] || \
+  fail "deploy user shell is not nologin: $deploy_shell"
+ok "deploy user shell is nologin"
+
+echo "[5f.2] deploy Ansible config is root-owned"
+deploy_ansible_config="{{ robokitty_deploy_runner_ansible_config }}"
+[ -f "$deploy_ansible_config" ] || fail "deploy Ansible config is missing"
+[ ! -L "$deploy_ansible_config" ] || fail "deploy Ansible config must not be a symlink"
+deploy_ansible_config_stat="$(stat -c '%a %U %G' "$deploy_ansible_config")"
+[ "$deploy_ansible_config_stat" = "644 root root" ] || \
+  fail "deploy Ansible config ownership or mode is unsafe: $deploy_ansible_config_stat"
+ok "deploy Ansible config is root-owned"
+
+echo "[5g] Codex has no deploy sudo path"
+if sudo -n -l -U {{ robokitty_runner_user }} 2>/dev/null | grep -Fq {{ robokitty_deploy_runner_wrapper | quote }}; then
+  fail "Codex runner can invoke deploy wrapper through sudo"
+else
+  ok "Codex runner cannot invoke deploy wrapper through sudo"
+fi
+
+echo "[5h] Actions sudo path is fixed deploy wrapper only"
+grep -Fq 'Defaults:{{ robokitty_actions_runner_user }} env_reset' \
+  /etc/sudoers.d/robokitty-devbox || \
+  fail "Actions runner sudoers entry does not reset caller environment"
+grep -Fq 'Defaults:{{ robokitty_actions_runner_user }} env_delete += "BASH_ENV ENV CDPATH GLOBIGNORE SHELLOPTS"' \
+  /etc/sudoers.d/robokitty-devbox || \
+  fail "Actions runner sudoers entry does not delete shell startup environment"
+grep -Fq 'Defaults:{{ robokitty_actions_runner_user }} secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' \
+  /etc/sudoers.d/robokitty-devbox || \
+  fail "Actions runner sudoers entry does not pin command search path"
+grep -Fq '{{ robokitty_actions_runner_user }} ALL=(root) NOPASSWD: {{ robokitty_deploy_runner_wrapper }}' \
+  /etc/sudoers.d/robokitty-devbox || \
+  fail "Actions runner sudoers entry is missing"
+actions_sudo="$(sudo -n -l -U {{ robokitty_actions_runner_user }} 2>/dev/null || true)"
+actions_nopasswd="$(grep -E '^[[:space:]]*[(].*[)][[:space:]]+NOPASSWD:' <<<"$actions_sudo" || true)"
+actions_nopasswd_count="$(grep -Ec 'NOPASSWD:' <<<"$actions_nopasswd" || true)"
+[ "$actions_nopasswd_count" = "1" ] || \
+  fail "Actions runner has unexpected sudo capabilities: $actions_nopasswd"
+grep -Fq '(root) NOPASSWD: {{ robokitty_deploy_runner_wrapper }}' <<<"$actions_nopasswd" || \
+  fail "Actions runner sudo capability is not the fixed deploy wrapper"
+ok "Actions runner sudo path is constrained to deploy wrapper"
+
+echo "[5i] Actions runner cannot write deploy checkout parent"
+if sudo -n -u {{ robokitty_actions_runner_user }} test -w {{ (robokitty_deploy_runner_checkout_dir | dirname) | quote }}; then
+  fail "Actions runner can write deploy checkout parent"
+else
+  ok "Actions runner cannot write deploy checkout parent"
+fi
+
+echo "[5j] deploy logs are root-only and rotated"
+deploy_log_dir="{{ robokitty_deploy_runner_log_dir }}"
+deploy_log_dir_stat="$(stat -c '%a %U %G' "$deploy_log_dir")"
+[ "$deploy_log_dir_stat" = "700 root root" ] || \
+  fail "deploy log directory ownership or mode is unsafe: $deploy_log_dir_stat"
+grep -Fq 'create 0600 root root' /etc/logrotate.d/robokitty-deploy-runner || \
+  fail "deploy logrotate policy does not preserve root-only logs"
+ok "deploy logs are root-only and rotated"
+{% endif %}
+
 echo "[6] GitHub broker exposes no denied P0 surfaces"
 if grep -Eq "sub\\.add_parser\\('(merge|api|workflow|secret|admin)'" {{ robokitty_libdir }}/githubctl.py; then
   fail "githubctl exposes a denied subcommand"
@@ -282,6 +367,18 @@ if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
   /home/{{ robokitty_runner_user }}/.codex/config.toml; then
   fail "Codex config does not allow the githubctl broker Unix socket"
 fi
+{% if robokitty_deploy_runner_enabled | bool %}
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"/home/{{ robokitty_actions_runner_user }}" = "deny"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not deny Actions runner home"
+fi
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"/home/{{ robokitty_deploy_runner_user }}" = "deny"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not deny deploy runner home"
+fi
+{% endif %}
 legacy_rules_file="{{ robokitty_codex_requirements_dir }}/rules/robokitty-githubctl.rules"
 [ ! -e "$legacy_rules_file" ] || fail "legacy githubctl Codex exec rule must be removed"
 [ -r {{ robokitty_codex_requirements_file }} ] || fail "Codex requirements file is missing"

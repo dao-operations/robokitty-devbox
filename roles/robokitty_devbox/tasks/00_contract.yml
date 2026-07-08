@@ -139,6 +139,14 @@
       - robokitty_bridge_user is match('^[a-z_][a-z0-9_-]*[$]?$')
       - robokitty_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
       - robokitty_git_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_actions_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - robokitty_deploy_runner_user is match('^[a-z_][a-z0-9_-]*[$]?$')
+      - >-
+        robokitty_actions_runner_user not in
+        [robokitty_bridge_user, robokitty_runner_user, robokitty_git_user, robokitty_deploy_runner_user]
+      - >-
+        robokitty_deploy_runner_user not in
+        [robokitty_bridge_user, robokitty_runner_user, robokitty_git_user]
       - robokitty_work_group is match('^[a-z_][a-z0-9_-]*[$]?$')
       - robokitty_root is match('^/[A-Za-z0-9._+/-]+$')
       - "'..' not in robokitty_root.split('/')"
@@ -168,6 +176,22 @@
       - robokitty_workdir is search('^' ~ robokitty_root ~ '/')
       - robokitty_live_dir is search('^' ~ robokitty_root ~ '/')
       - robokitty_infra_dir is search('^' ~ robokitty_root ~ '/')
+      - robokitty_actions_runner_home == '/home/' ~ robokitty_actions_runner_user
+      - robokitty_actions_runner_dir is search('^' ~ robokitty_actions_runner_home ~ '/')
+      - robokitty_actions_runner_work_subdir is match('^[A-Za-z0-9._-]+$')
+      - robokitty_actions_runner_work_subdir is not search('^\\.')
+      - robokitty_actions_runner_work_dir == robokitty_actions_runner_dir ~ '/' ~ robokitty_actions_runner_work_subdir
+      - robokitty_actions_runner_archive is search('^/var/cache/robokitty-devbox/actions-runner/')
+      - "'..' not in robokitty_actions_runner_archive.split('/')"
+      - robokitty_deploy_runner_home == '/home/' ~ robokitty_deploy_runner_user
+      - robokitty_deploy_runner_vault_password_file is search('^' ~ robokitty_deploy_runner_home ~ '/')
+      - robokitty_deploy_runner_checkout_dir is search('^' ~ robokitty_deploy_runner_home ~ '/')
+      - robokitty_deploy_runner_log_dir is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_deploy_runner_log_dir.split('/')"
+      - robokitty_deploy_runner_ansible_home is match('^/[A-Za-z0-9._+/-]+$')
+      - "'..' not in robokitty_deploy_runner_ansible_home.split('/')"
+      - robokitty_deploy_runner_ansible_config == robokitty_config_dir ~ '/ansible-deploy.cfg'
+      - robokitty_deploy_runner_wrapper is search('^' ~ robokitty_bindir ~ '/')
       - robokitty_codex_binary is match('^/[A-Za-z0-9._+/-]+$')
       - "'..' not in robokitty_codex_binary.split('/')"
       - robokitty_codex_permission_profile is match('^[A-Za-z0-9][A-Za-z0-9_-]*$')
@@ -312,6 +336,53 @@
   when:
     - robokitty_github_broker_enabled | bool
     - robokitty_git_commit_signing_enabled | bool
+
+- name: "CONTRACT | Assert deploy runner guardrails"
+  ansible.builtin.assert:
+    that:
+      - robokitty_deploy_runner_secret_custody_ack == 'host-resident-vault-password'
+      - robokitty_deploy_runner_github_controls_ack == 'protected-branch-environment-runner-scope'
+      - robokitty_deploy_runner_github_url is match('^https://github[.]com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/?$')
+      - robokitty_deploy_runner_repository is match('^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
+      - robokitty_deploy_runner_repository_name is match('^[A-Za-z0-9_.-]+$')
+      - robokitty_deploy_runner_branch is match('^[A-Za-z0-9._/-]+$')
+      - robokitty_actions_runner_github_url == robokitty_deploy_runner_github_url
+      - robokitty_actions_runner_name is match('^[A-Za-z0-9][A-Za-z0-9_.@-]*$')
+      - robokitty_actions_runner_labels | length > 0
+      - >-
+        robokitty_actions_runner_package_url is match(
+          '^https://github[.]com/actions/runner/releases/download/.+/' ~
+          'actions-runner-linux-x64-[0-9.]+[.]tar[.]gz$'
+        )
+      - robokitty_actions_runner_package_checksum is match('^sha256:[A-Fa-f0-9]{64}$')
+      - robokitty_actions_runner_registration_token | trim | length > 0
+      - >-
+        (
+          (robokitty_deploy_runner_vault_password | trim | length > 0) | ternary(1, 0)
+        ) +
+        (
+          (robokitty_deploy_runner_vault_password_src | trim | length > 0) | ternary(1, 0)
+        ) == 1
+      - robokitty_deploy_runner_inventory is match('^[A-Za-z0-9._/-]+[.]yml$')
+      - robokitty_deploy_runner_inventory is not search('^/')
+      - robokitty_deploy_runner_inventory is not search('(^|/)\\.\\.(/|$)')
+      - robokitty_deploy_runner_playbook is match('^[A-Za-z0-9._/-]+[.]yml$')
+      - robokitty_deploy_runner_playbook is not search('^/')
+      - robokitty_deploy_runner_playbook is not search('(^|/)\\.\\.(/|$)')
+    fail_msg: >-
+      Deploy runner is enabled but its security contract is incomplete. It
+      requires explicit host-resident vault-password acknowledgement, a
+      checksummed GitHub Actions runner package, a registration token, one
+      vault-password source, and fixed production inventory/playbook paths.
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: "CONTRACT | Assert Actions runner labels are safe"
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9_.-]+$')
+    fail_msg: "Actions runner labels must be literal label tokens."
+  loop: "{{ robokitty_actions_runner_labels }}"
+  when: robokitty_deploy_runner_enabled | bool
 
 - name: "CONTRACT | Build configured repository list"
   ansible.builtin.set_fact:

@@ -228,6 +228,56 @@ ansible-playbook -i inventories/production/hosts.yml playbooks/robokitty_devbox.
 ansible-playbook -i inventories/production/hosts.yml playbooks/robokitty_devbox.yml --ask-vault-pass
 ```
 
+## 5a. Optional self-hosted deploy runner
+
+Read `docs/decisions/0012-self-hosted-deploy-runner.md` and
+`docs/self-hosted-deploy-runner.md` before enabling this pilot. The runner is
+compatible with Cloudflare-only access because it connects outbound to GitHub.
+Do not add inbound webhook ports or public SSH rules.
+
+Add these values to the encrypted production vault:
+
+```yaml
+vault_robokitty_deploy_runner_enabled: true
+vault_robokitty_deploy_runner_secret_custody_ack: host-resident-vault-password
+vault_robokitty_deploy_runner_github_controls_ack: protected-branch-environment-runner-scope
+vault_robokitty_actions_runner_package_url: https://github.com/actions/runner/releases/download/vX.Y.Z/actions-runner-linux-x64-X.Y.Z.tar.gz
+vault_robokitty_actions_runner_package_checksum: sha256:<release-sha256>
+vault_robokitty_actions_runner_registration_token: <short-lived-registration-token>
+vault_robokitty_deploy_runner_vault_password: <ansible-vault-password>
+```
+
+Apply once from the operator machine. This creates `agent-actions`,
+`agent-deploy`, the Actions runner service, the deploy vault password file, and
+the fixed `/usr/local/bin/robokitty-deploy-infra` wrapper.
+
+The current `githubctl` policy rejects workflow file edits, so create the
+GitHub workflow through a human-controlled GitHub path. Use the template in
+`docs/self-hosted-deploy-runner.md`. Configure it to run only on pushes to the
+protected `master` branch, never on pull request, fork, `pull_request_target`,
+issue-comment, or untrusted `workflow_run` events. Require CODEOWNERS review
+for workflow, Ansible, inventory, deploy wrapper, and sudoers paths. Restrict
+the runner to this repository or a tightly scoped runner group, and require a
+GitHub Environment reviewer for deploy.
+
+After that, the intended loop is:
+
+1. Robokitty opens an infra PR.
+2. The operator reviews and merges the PR from GitHub.
+3. GitHub schedules the self-hosted runner.
+4. The workflow runs `make ci`.
+5. The workflow runs
+   `sudo -n /usr/local/bin/robokitty-deploy-infra "$GITHUB_SHA"`.
+6. The wrapper deploys that reviewed commit from its own clean checkout and
+   fails if `master` moved after the workflow was triggered.
+
+Validate:
+
+```bash
+robokitty-security-check
+systemctl status robokitty-actions-runner
+```
+
 ## 6. Log in to Codex
 
 ```bash

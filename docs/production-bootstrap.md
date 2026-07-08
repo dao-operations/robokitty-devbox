@@ -13,6 +13,8 @@ This is the intended path from a fresh Ubuntu 24.04 VPS to a locked-down Robokit
 - SSHD listens on `127.0.0.1` in production mode; Cloudflare Tunnel forwards to it locally.
 - Host UFW defaults to deny inbound and does not allow world-open SSH.
 - Takopi receives Telegram updates outbound; phones do not connect to the VPS.
+- Optional self-hosted deploy runner connects outbound to GitHub; it does not
+  require inbound webhook or SSH access.
 
 ## Bootstrap reality
 
@@ -129,6 +131,14 @@ changes without needing vault access.
 
 Do not put the Ansible Vault password in this repo. Prefer storing the operator SSH private key in a password manager, not in this public repository, even if encrypted.
 
+For the optional self-hosted deploy runner pilot, the vault also carries the
+runner package URL/checksum, registration token, explicit
+`host-resident-vault-password` acknowledgement, explicit acknowledgement that
+protected-branch, Environment, and runner-scope controls are configured, and
+the vault password value that Ansible writes to the `agent-deploy` account.
+This is a deliberate departure from human-only vault custody; read
+`docs/decisions/0012-self-hosted-deploy-runner.md` before enabling it.
+
 ## Repository config shape
 
 Production inventory should contain stable aliases, not public IPs:
@@ -180,6 +190,8 @@ The playbook should own the host baseline after the bootstrap transport exists:
 - Codex/bubblewrap user namespace prerequisites for the non-full-access sandbox.
 - `githubctl` restricted operations and audit trail.
 - Rootless Podman runner without host secret mounts.
+- Optional self-hosted deploy runner split between `agent-actions` and
+  `agent-deploy`, with no Codex-readable deploy secrets.
 - `robokitty-security-check` validation.
 
 This is a practical production pilot baseline, not a perfect host-hardening proof. Residual risks should stay explicit in `docs/security-model.md`.

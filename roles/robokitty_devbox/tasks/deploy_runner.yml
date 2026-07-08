@@ -1,0 +1,275 @@
+---
+- name: Inspect Actions runner unit for disable
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ robokitty_actions_runner_service_name }}.service"
+  register: robokitty_actions_runner_unit
+  when: not (robokitty_deploy_runner_enabled | bool)
+
+- name: Stop/disable Actions runner when deploy runner is disabled
+  ansible.builtin.service:
+    name: "{{ robokitty_actions_runner_service_name }}"
+    enabled: false
+    state: stopped
+  when:
+    - not (robokitty_deploy_runner_enabled | bool)
+    - robokitty_actions_runner_unit.stat.exists | default(false)
+    - not ansible_check_mode
+
+- name: Remove deploy runner artifacts when disabled
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/etc/systemd/system/{{ robokitty_actions_runner_service_name }}.service"
+    - /etc/logrotate.d/robokitty-deploy-runner
+    - "{{ robokitty_deploy_runner_ansible_config }}"
+    - "{{ robokitty_deploy_runner_wrapper }}"
+    - "{{ robokitty_bindir }}/robokitty-check-ansible-requirements"
+    - "{{ robokitty_deploy_runner_vault_password_file }}"
+    - "{{ robokitty_actions_runner_dir }}"
+    - "{{ robokitty_deploy_runner_checkout_dir }}"
+  when: not (robokitty_deploy_runner_enabled | bool)
+
+- name: Reload systemd after deploy runner disable
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - not (robokitty_deploy_runner_enabled | bool)
+    - not ansible_check_mode
+
+- name: Ensure Actions runner and deploy directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: "{{ robokitty_actions_runner_dir }}"
+      owner: "{{ robokitty_actions_runner_user }}"
+      group: "{{ robokitty_actions_runner_user }}"
+      mode: "0700"
+    - path: "{{ robokitty_actions_runner_work_dir }}"
+      owner: "{{ robokitty_actions_runner_user }}"
+      group: "{{ robokitty_actions_runner_user }}"
+      mode: "0700"
+    - path: "{{ robokitty_deploy_runner_home }}/.config"
+      owner: "{{ robokitty_deploy_runner_user }}"
+      group: "{{ robokitty_deploy_runner_user }}"
+      mode: "0700"
+    - path: "{{ robokitty_deploy_runner_home }}/.config/robokitty-devbox"
+      owner: "{{ robokitty_deploy_runner_user }}"
+      group: "{{ robokitty_deploy_runner_user }}"
+      mode: "0700"
+    - path: "{{ robokitty_deploy_runner_checkout_dir | dirname }}"
+      owner: "{{ robokitty_deploy_runner_user }}"
+      group: "{{ robokitty_deploy_runner_user }}"
+      mode: "0700"
+    - path: "{{ robokitty_deploy_runner_log_dir }}"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: "{{ robokitty_deploy_runner_ansible_home }}"
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ robokitty_deploy_runner_ansible_home }}/tmp"
+      owner: root
+      group: root
+      mode: "0700"
+    - path: /var/cache/robokitty-devbox/actions-runner
+      owner: root
+      group: root
+      mode: "0755"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Copy deploy vault password from local path
+  ansible.builtin.copy:
+    src: "{{ robokitty_deploy_runner_vault_password_src }}"
+    dest: "{{ robokitty_deploy_runner_vault_password_file }}"
+    owner: "{{ robokitty_deploy_runner_user }}"
+    group: "{{ robokitty_deploy_runner_user }}"
+    mode: "0400"
+  no_log: true
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_deploy_runner_vault_password_src | length > 0
+
+- name: Write deploy vault password from vault variable
+  ansible.builtin.copy:
+    content: "{{ robokitty_deploy_runner_vault_password }}"
+    dest: "{{ robokitty_deploy_runner_vault_password_file }}"
+    owner: "{{ robokitty_deploy_runner_user }}"
+    group: "{{ robokitty_deploy_runner_user }}"
+    mode: "0400"
+  no_log: true
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_deploy_runner_vault_password | length > 0
+
+- name: Download GitHub Actions runner archive
+  ansible.builtin.get_url:
+    url: "{{ robokitty_actions_runner_package_url }}"
+    dest: "{{ robokitty_actions_runner_archive }}"
+    owner: root
+    group: root
+    mode: "0644"
+    checksum: "{{ robokitty_actions_runner_package_checksum }}"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Inspect installed Actions runner package checksum
+  ansible.builtin.stat:
+    path: "{{ robokitty_actions_runner_dir }}/.robokitty-runner-package-checksum"
+  register: robokitty_actions_runner_package_marker
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Read installed Actions runner package checksum
+  ansible.builtin.slurp:
+    path: "{{ robokitty_actions_runner_dir }}/.robokitty-runner-package-checksum"
+  register: robokitty_actions_runner_package_marker_content
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_actions_runner_package_marker.stat.exists | default(false)
+
+- name: Set installed Actions runner package checksum
+  ansible.builtin.set_fact:
+    robokitty_actions_runner_installed_checksum: >-
+      {{
+        (
+          robokitty_actions_runner_package_marker_content.content |
+          default('') |
+          b64decode |
+          trim
+        )
+        if (robokitty_actions_runner_package_marker.stat.exists | default(false))
+        else ''
+      }}
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Stop Actions runner before package update
+  ansible.builtin.service:
+    name: "{{ robokitty_actions_runner_service_name }}"
+    state: stopped
+  failed_when: false
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_actions_runner_installed_checksum | default('') != robokitty_actions_runner_package_checksum
+    - not ansible_check_mode
+
+- name: Extract GitHub Actions runner archive
+  ansible.builtin.unarchive:
+    src: "{{ robokitty_actions_runner_archive }}"
+    dest: "{{ robokitty_actions_runner_dir }}"
+    remote_src: true
+    owner: "{{ robokitty_actions_runner_user }}"
+    group: "{{ robokitty_actions_runner_user }}"
+  notify: Restart robokitty-actions-runner
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_actions_runner_installed_checksum | default('') != robokitty_actions_runner_package_checksum
+
+- name: Record installed Actions runner package checksum
+  ansible.builtin.copy:
+    content: "{{ robokitty_actions_runner_package_checksum }}\n"
+    dest: "{{ robokitty_actions_runner_dir }}/.robokitty-runner-package-checksum"
+    owner: "{{ robokitty_actions_runner_user }}"
+    group: "{{ robokitty_actions_runner_user }}"
+    mode: "0600"
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - robokitty_actions_runner_installed_checksum | default('') != robokitty_actions_runner_package_checksum
+
+- name: Inspect Actions runner registration
+  ansible.builtin.stat:
+    path: "{{ robokitty_actions_runner_dir }}/.runner"
+  register: robokitty_actions_runner_registration
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Configure GitHub Actions runner
+  ansible.builtin.command:
+    argv:
+      - "{{ robokitty_actions_runner_dir }}/config.sh"
+      - --url
+      - "{{ robokitty_actions_runner_github_url }}"
+      - --token
+      - "{{ robokitty_actions_runner_registration_token }}"
+      - --name
+      - "{{ robokitty_actions_runner_name }}"
+      - --labels
+      - "{{ robokitty_actions_runner_labels | join(',') }}"
+      - --work
+      - "{{ robokitty_actions_runner_work_subdir }}"
+      - --unattended
+      - --replace
+    chdir: "{{ robokitty_actions_runner_dir }}"
+    creates: "{{ robokitty_actions_runner_dir }}/.runner"
+  become: true
+  become_user: "{{ robokitty_actions_runner_user }}"
+  no_log: true
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - not robokitty_actions_runner_registration.stat.exists
+
+- name: Install deploy wrapper
+  ansible.builtin.template:
+    src: robokitty-deploy-infra.sh.j2
+    dest: "{{ robokitty_deploy_runner_wrapper }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Install deploy Ansible requirements policy checker
+  ansible.builtin.template:
+    src: robokitty-check-ansible-requirements.py.j2
+    dest: "{{ robokitty_bindir }}/robokitty-check-ansible-requirements"
+    owner: root
+    group: root
+    mode: "0755"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Install deploy Ansible config
+  ansible.builtin.template:
+    src: ansible-deploy.cfg.j2
+    dest: "{{ robokitty_deploy_runner_ansible_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Install deploy logrotate policy
+  ansible.builtin.template:
+    src: robokitty-deploy-logrotate.j2
+    dest: /etc/logrotate.d/robokitty-deploy-runner
+    owner: root
+    group: root
+    mode: "0644"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Install Actions runner systemd unit
+  ansible.builtin.template:
+    src: actions-runner.service.j2
+    dest: "/etc/systemd/system/{{ robokitty_actions_runner_service_name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart robokitty-actions-runner
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Apply Actions runner unit changes
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - not ansible_check_mode
+
+- name: Enable/start Actions runner
+  ansible.builtin.service:
+    name: "{{ robokitty_actions_runner_service_name }}"
+    enabled: true
+    state: started
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - not ansible_check_mode

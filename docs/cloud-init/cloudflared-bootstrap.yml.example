@@ -1,0 +1,100 @@
+#cloud-config
+#
+# Example first-boot bootstrap for a Cloudflare-first Robokitty VPS.
+# Replace placeholders before pasting into the VPS provider user-data field.
+# Do not commit a copy containing real tokens or SSH keys.
+
+package_update: true
+package_upgrade: false
+
+ssh_pwauth: false
+disable_root: false
+
+users:
+  - default
+  - name: root
+    ssh_authorized_keys:
+      - ssh-ed25519 REPLACE_WITH_OPERATOR_PUBLIC_KEY
+
+bootcmd:
+  - [mkdir, -p, /etc/cloudflared, /etc/ssh/sshd_config.d]
+
+write_files:
+  - path: /etc/cloudflared/robokitty-tunnel.token
+    owner: root:root
+    permissions: "0600"
+    content: |
+      REPLACE_WITH_CLOUDFLARE_TUNNEL_TOKEN
+  - path: /etc/systemd/system/robokitty-cloudflared.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Cloudflare Tunnel connector for Robokitty devbox
+      Wants=network-online.target
+      After=network-online.target
+
+      [Service]
+      Type=notify
+      User=cloudflared
+      Group=cloudflared
+      ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:60123 run --token-file /etc/cloudflared/robokitty-tunnel.token
+      Restart=on-failure
+      RestartSec=5s
+      RuntimeDirectory=cloudflared
+      StateDirectory=cloudflared
+      LogsDirectory=cloudflared
+      NoNewPrivileges=true
+      PrivateDevices=true
+      PrivateTmp=true
+      ProtectClock=true
+      ProtectControlGroups=true
+      ProtectHome=true
+      ProtectHostname=true
+      ProtectKernelLogs=true
+      ProtectKernelModules=true
+      ProtectKernelTunables=true
+      ProtectSystem=strict
+      ReadOnlyPaths=/etc/cloudflared
+      RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+      RestrictNamespaces=true
+      RestrictRealtime=true
+      RestrictSUIDSGID=true
+      SystemCallArchitectures=native
+      UMask=0077
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/ssh/sshd_config.d/99-robokitty-bootstrap.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      ListenAddress 127.0.0.1
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      ChallengeResponseAuthentication no
+      PermitEmptyPasswords no
+      PubkeyAuthentication yes
+      PermitRootLogin prohibit-password
+      X11Forwarding no
+      AllowTcpForwarding no
+      PermitTunnel no
+
+runcmd:
+  - [install, -d, -m, "0755", /usr/share/keyrings]
+  - [install, -d, -m, "0750", -o, root, -g, root, /etc/cloudflared]
+  - [curl, -fsSL, -o, /usr/share/keyrings/cloudflare-main.gpg, https://pkg.cloudflare.com/cloudflare-main.gpg]
+  - [chmod, "0644", /usr/share/keyrings/cloudflare-main.gpg]
+  - [sh, -c, "echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared noble main' > /etc/apt/sources.list.d/cloudflared.list"]
+  - [apt-get, update]
+  - [apt-get, install, -y, cloudflared, openssh-server]
+  - [sh, -c, "getent group cloudflared >/dev/null || groupadd --system cloudflared"]
+  - [sh, -c, "id -u cloudflared >/dev/null 2>&1 || useradd --system --gid cloudflared --home-dir /nonexistent --shell /usr/sbin/nologin cloudflared"]
+  - [chown, root:cloudflared, /etc/cloudflared]
+  - [chmod, "0750", /etc/cloudflared]
+  - [chown, root:cloudflared, /etc/cloudflared/robokitty-tunnel.token]
+  - [chmod, "0640", /etc/cloudflared/robokitty-tunnel.token]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, robokitty-cloudflared.service]
+  - [/usr/sbin/sshd, -t]
+  - [systemctl, restart, ssh.service]

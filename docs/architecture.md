@@ -13,13 +13,13 @@ Telegram
   -> Takopi as agent-bridge
   -> Codex as agent
   -> repo worktrees under /srv/robokitty-devbox/work
-  -> githubctl broker as agent-git
+  -> githubctl broker daemon as agent-git
   -> GitHub draft PRs
 ```
 
 ### agent-bridge
 
-Owns Takopi and the Telegram token. It can invoke Codex through a constrained wrapper but cannot read Codex credentials or GitHub App credentials.
+Owns Takopi and the Telegram token. It can invoke Codex through a constrained wrapper but cannot read Codex credentials or GitHub credentials.
 
 ### agent
 
@@ -27,7 +27,9 @@ Owns Codex, worktrees, live guidance, and normal development commands. It has in
 
 ### agent-git
 
-Owns the GitHub App private key. It mints short-lived installation tokens and exposes only the restricted `githubctl` interface.
+Owns the separate GitHub identity's PAT and exposes only the restricted
+`githubctl` interface through a group-owned Unix socket. Codex can ask for
+brokered operations, but it cannot read or persist the PAT.
 
 ### rootless Podman
 
@@ -43,12 +45,13 @@ Used for repo command execution where practical. Codex remains on the host; repo
 Telegram message
   -> Takopi reads token and receives update
   -> Takopi starts Codex through /usr/local/lib/robokitty-devbox/wrappers/codex
-  -> Codex edits files in a sibling worktree
+  -> Codex edits files in a runner-owned worktree
   -> Codex runs tests, preferably via devbox-run
   -> Codex commits locally
   -> Codex calls githubctl submit
-  -> githubctl re-execs as agent-git
-  -> agent-git mints GitHub App token
-  -> broker safe-squashes diff into a clean clone
-  -> broker pushes agent/* branch and opens draft PR
+  -> githubctl sends prepared request to the agent-git broker daemon
+  -> agent-git reads the third-identity PAT
+  -> broker safe-squashes diff into a clean upstream clone
+  -> broker creates or reuses the agent identity fork
+  -> broker pushes agent/* branch to that fork and opens draft PR upstream
 ```

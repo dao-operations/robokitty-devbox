@@ -7,7 +7,8 @@ Assume Codex can be prompt-injected and can use the internet. The system is only
 Review:
 
 - Can `agent` read Telegram token?
-- Can `agent` read GitHub App key?
+- Can `agent` read GitHub PAT?
+- Can `agent` read Git signing private key?
 - Can `agent` get a GitHub token indirectly?
 - Can `agent` invoke arbitrary sudo?
 - Can `agent` run authenticated `gh` directly?

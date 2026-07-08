@@ -5,19 +5,19 @@
 The goal is to prove this operating model:
 
 ```text
-Telegram / laptop Codex / SSH
+Telegram / laptop Codex / Cloudflare Access SSH
         │
         ▼
 Ubuntu VPS devbox
         │
         ├── agent-bridge: Takopi + Telegram token
         ├── agent: Codex + worktrees + internet access
-        ├── agent-git: GitHub App key + restricted GitHub broker
+        ├── agent-git: third-identity GitHub PAT + restricted GitHub broker
         ├── rootless Podman runner for repo commands
         └── live Codex guidance with periodic drift sync back to this repo
 ```
 
-Codex should be useful, internet-enabled, and able to create PRs, while being technically unable to read the Telegram bot token or GitHub App private key.
+Codex should be useful, internet-enabled, and able to create signed PR commits, while being technically unable to read the Telegram bot token, the GitHub PAT, or the SSH signing private key used by the separate agent identity.
 
 ## What this repository contains
 
@@ -40,25 +40,43 @@ scripts/                    Local helper scripts for this repo
 6. Use Codex `Approve for me` / Auto-review, not full access.
 7. Enable Codex internet access, but keep filesystem restrictions and Unix-user secret separation.
 8. Use Takopi as the Telegram bridge.
-9. Use a GitHub App through a restricted broker instead of giving Codex an authenticated GitHub CLI.
-10. Use rootless Podman for repo command execution where possible.
-11. Let Codex iterate live on non-secret guidance under `/srv/robokitty-devbox/live`; periodically sync drift back into this repo.
-12. Only a human with vault access applies privileged Ansible changes.
+9. Use a separate GitHub user through a restricted broker instead of giving Codex an authenticated GitHub CLI.
+10. Sign broker-created PR commits by default with a dedicated SSH signing key.
+11. Use rootless Podman for repo command execution where possible.
+12. Let Codex iterate live on non-secret guidance under `/srv/robokitty-devbox/live`; periodically sync drift back into this repo.
+13. Only a human with vault access applies privileged Ansible changes.
+14. Use Cloudflare Tunnel plus Cloudflare Access for production SSH and Ansible transport.
+15. Commit only encrypted Ansible Vault files for deployment-specific private config.
 
 ## First useful milestone
 
-From Telegram, tell Robokitty to:
+On the devbox, generate the first task prompt:
+
+```bash
+robokitty-bootstrap-task <repo-alias>
+```
+
+Then send the generated Telegram message. It will look like:
 
 ```text
-/<repo-alias> @agent/bootstrap-test
-Create a tiny documentation-only change on branch agent/bootstrap-test.
-Run the lightweight checks.
-Commit locally.
-Create PR_BODY.md.
+/<repo-alias>
+Create a tiny README.md or docs/ change on branch agent/bootstrap-test.
+Use the managed worktree helper and stop if it fails.
+Run the lightweight checks, including git diff --check.
+Commit locally for review.
+Create PR_BODY.md and leave it untracked.
 Submit a draft PR using githubctl.
 Report the PR URL.
 Do not merge.
 ```
+
+Do not put `@agent/bootstrap-test` on the Telegram directive line; the prompt
+asks Codex to create the runner-owned worktree with `robokitty-new-worktree`.
+The generated bootstrap task is intentionally docs-only, so `git diff --check`
+is enough for that smoke. For real infra changes touching playbooks, roles,
+templates, scripts, broker behavior, sudoers, systemd units, Podman runner
+behavior, or Codex permission/guidance wiring, require `make ci` locally on the
+VPS before `githubctl submit`.
 
 ## How to start with Codex
 

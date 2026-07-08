@@ -10,7 +10,7 @@ Use:
 
 - `agent-bridge` for Takopi and Telegram token,
 - `agent` for Codex and worktrees,
-- `agent-git` for GitHub App key and authenticated GitHub actions.
+- `agent-git` for the separate GitHub identity PAT and authenticated GitHub actions.
 
 ## Rationale
 

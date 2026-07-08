@@ -25,6 +25,10 @@ Example:
 devbox-run dao /srv/robokitty-devbox/work/example-frontend.agent.bootstrap-test -- pnpm build
 ```
 
+Each repo may set `container_image` and `container_workdir` in repo config.
+`container_workdir` is a safe relative path inside the selected worktree and
+defaults to `/workspace`. It does not add mounts or arbitrary Podman flags.
+
 ## Container constraints
 
 The wrapper should:
@@ -38,7 +42,22 @@ The wrapper should:
 - allow network,
 - run rootless,
 - drop capabilities,
-- use `--security-opt=no-new-privileges`.
+- use `--security-opt=no-new-privileges`,
+- disable the per-container AppArmor profile with
+  `--security-opt=apparmor=unconfined` while relying on rootless execution,
+  explicit mounts, dropped capabilities, and host runtime-helper AppArmor
+  profiles for the P0 boundary.
+
+On Ubuntu 24.04, rootless Podman also needs explicit host support:
+
+- the runner has subordinate UID/GID ranges,
+- the runner keeps its normal primary group for rootless Podman and broker
+  handoff, with `agent-work` only as a supplementary group for shared worktree
+  state,
+- per-user storage config forces `fuse-overlayfs` for the overlay driver,
+- AppArmor user-namespace profiles are loaded for `podman`, `conmon`, `crun`,
+  `fuse-overlayfs`, and `slirp4netns` when Ubuntu's restricted unprivileged
+  user namespace sysctl exists.
 
 ## P0/P1 line
 
@@ -51,7 +70,7 @@ P0:
 
 P1:
 
-- add repo-specific container images,
+- add repo-specific container images and workdirs,
 - add devcontainer support if needed,
 - prefer `devbox-run` for all install/build/test.
 

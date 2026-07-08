@@ -4,7 +4,7 @@ This repository defines the infrastructure and operating model for an Ubuntu VPS
 
 ## Mission
 
-Implement a small, auditable, security-conscious remote development box using Ansible, Codex, Takopi, rootless Podman, and a GitHub App broker.
+Implement a small, auditable, security-conscious remote development box using Ansible, Codex, Takopi, rootless Podman, and a restricted GitHub broker for a separate agent identity.
 
 ## Hard rules
 
@@ -13,7 +13,7 @@ Implement a small, auditable, security-conscious remote development box using An
 - Do not add Kubernetes.
 - Do not add MCP.
 - Do not configure Codex `danger-full-access`.
-- Do not give the Codex runner user direct access to the Telegram token or GitHub App private key.
+- Do not give the Codex runner user direct access to the Telegram token, GitHub PAT, or Git signing private key.
 - Do not give the Codex runner user a persistent GitHub token.
 - Do not implement GitHub merge, workflow dispatch, secrets, admin, or arbitrary API passthrough in P0.
 - Keep Ansible idempotent.

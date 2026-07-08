@@ -16,7 +16,7 @@ You are implementing an Ubuntu 24.04 Ansible-managed remote development box call
 
 - `agent-bridge`: runs Takopi, owns Telegram token.
 - `agent`: runs Codex, owns worktrees, has internet.
-- `agent-git`: owns GitHub App key and performs brokered GitHub operations.
+- `agent-git`: owns the third-identity GitHub PAT and SSH signing private key, and performs brokered GitHub operations.
 - `githubctl`: only authenticated GitHub interface available to Codex.
 - `devbox-run`: rootless Podman wrapper for repo commands.
 - `/srv/robokitty-devbox/live/codex`: live-editable Codex guidance.
@@ -29,10 +29,12 @@ You are implementing an Ubuntu 24.04 Ansible-managed remote development box call
 - Codex has internet access.
 - Codex does not have `danger-full-access`.
 - Codex cannot read Telegram token.
-- Codex cannot read GitHub App private key.
+- Codex cannot read the GitHub PAT.
+- Codex cannot read the Git signing private key.
 - Codex cannot run authenticated `gh` directly.
 - GitHub PR creation goes through `githubctl`.
-- GitHub broker cannot merge, dispatch workflows, access secrets, or pass through arbitrary API calls.
+- GitHub PR commits created by `githubctl` are signed by default.
+- GitHub broker cannot merge, dispatch workflows, edit workflow files, access secrets, or pass through arbitrary API calls.
 - Podman wrapper runs repo commands without mounting host credential directories.
 - Live AGENTS.md/skills can be updated quickly; drift sync reconciles to repo periodically.
 

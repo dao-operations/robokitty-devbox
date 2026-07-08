@@ -23,11 +23,13 @@ Tasks:
 - Install packages.
 - Create users/groups/directories.
 - Add safe UFW/fail2ban/unattended-upgrades baseline.
+- Keep the dev/example path safe from lockout, but require Cloudflare-first access before production use.
 
 Exit criteria:
 
 - VPS has `agent-bridge`, `agent`, `agent-git`.
 - No SSH lockout.
+- Production docs identify the Cloudflare bootstrap path before public SSH is removed.
 
 ## WP2 — Codex + Approve for me
 
@@ -58,19 +60,24 @@ Exit criteria:
 - Telegram message reaches Codex.
 - `agent` cannot read Takopi token.
 
-## WP4 — GitHub App broker
+## WP4 — GitHub third-identity broker
 
 Tasks:
 
-- Store GitHub App private key under `agent-git`.
-- Mint installation tokens.
+- Store a separate GitHub identity PAT under `agent-git`.
+- Store a dedicated SSH commit signing key under `agent-git`.
+- Keep the PAT and signing private key unreadable by the Codex runner and bridge users.
 - Implement `githubctl status`, `submit`, `pr view`, `pr checks`, `pr comment`.
 - Safe-squash submission through clean temporary clone.
+- Push agent branches to the separate identity's fork and open PRs upstream.
+- Sign broker-created squash commits by default.
+- Deny workflow file edits, merges, workflow dispatch, secrets, admin, and arbitrary API passthrough.
 
 Exit criteria:
 
 - Codex can submit draft PR through `githubctl`.
-- Codex cannot read GitHub App key.
+- Codex cannot read GitHub PAT.
+- Codex cannot read Git signing private key.
 - No merge or arbitrary API passthrough exists.
 
 ## WP5 — Worktree convention
@@ -79,7 +86,12 @@ Tasks:
 
 - Implement `robokitty-new-worktree`.
 - Implement `robokitty-delete-worktree`.
-- Use sibling worktree paths: `../repo.agent.task-name`.
+- Use sibling worktree paths under the configured work directory:
+  `../repo.agent.task-name`. For the infra repo, place task worktrees under
+  the work directory instead of making the top-level devbox root writable.
+- For the infra repo, create those task worktrees from a runner-owned source
+  repo outside the canonical checkout so Codex does not mutate protected
+  canonical `.git` metadata.
 
 Exit criteria:
 
@@ -123,14 +135,35 @@ Tasks:
 Exit criteria:
 
 - Telegram -> Codex -> worktree -> githubctl -> GitHub PR works.
+- Docs-only smoke tasks run lightweight local validation before submit.
+- Infra changes use VPS-local `make ci` as the pre-submit signal before relying
+  on any external GitHub CI.
 
-## WP9 — Hardening backlog
+## WP9 — Cloudflare-first production access
 
 Tasks:
 
-- Tailscale or Cloudflare Access.
-- Repo-specific containers/devcontainers.
-- Stronger process visibility hardening.
+- Use Cloudflare Tunnel plus Cloudflare Access as the production SSH and Ansible transport.
+- Document provider `cloud-init` or console bootstrap for `cloudflared` before the first Ansible run.
+- Add committed encrypted Ansible Vault as the production config pattern.
+- Make the production inventory contain aliases and vault references, not public IPs.
+- Tighten role contracts so production Cloudflare mode does not require world-open SSH CIDRs.
+- Add SSH daemon hardening that is compatible with Cloudflare Access SSH.
+- Validate that UFW has deny-incoming posture and no public SSH allow rule in production mode.
+
+Exit criteria:
+
+- A fresh Ubuntu 24.04 VPS can be reached by Ansible through Cloudflare Access without opening public SSH.
+- Production check/apply runs use only committed encrypted vault values plus a human-provided vault password.
+- `robokitty-security-check` passes after apply.
+
+## WP10 — Remaining hardening backlog
+
+Tasks:
+
+- Repo-specific container workdirs and images.
+- Devcontainer support if needed.
+- Stronger process visibility hardening for managed services.
 - Log/audit trail for `githubctl`.
 - Multi-user Telegram group topics.
 - Dedicated ChatGPT workspace identity.

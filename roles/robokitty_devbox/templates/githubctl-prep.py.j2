@@ -10,7 +10,9 @@ import argparse
 import grp
 import json
 import os
+import pwd
 import re
+import shutil
 import socket
 import stat
 import subprocess
@@ -20,10 +22,14 @@ from pathlib import Path
 
 BODY_FILE_MAX_BYTES = 256 * 1024
 BRANCH_RE = re.compile(r'^agent/[A-Za-z0-9._-]+$')
+REF_NAME_RE = re.compile(r'^[A-Za-z0-9._/-]+$')
 SECRET_SUFFIXES = {'.key', '.pem', '.p12', '.pfx'}
 HANDOFF_GROUP = '{{ robokitty_github_broker_handoff_group }}'
 SOCKET_PATH = '{{ robokitty_github_broker_socket_path }}'
 EXCHANGE_DIR = Path('{{ robokitty_github_broker_exchange_dir }}')
+CONFIG = Path('{{ robokitty_repo_config_file }}')
+WORKTREE_SOURCE_DIR = Path('{{ robokitty_worktree_source_dir }}')
+RUNNER_USER = '{{ robokitty_runner_user }}'
 MAX_RESPONSE_BYTES = 25 * 1024 * 1024
 
 
@@ -56,6 +62,102 @@ def validate_branch(branch: str) -> None:
         raise ValueError('branch name too close to protected branch')
 
 
+def validate_repo_branch(branch: str) -> None:
+    if not branch or not REF_NAME_RE.match(branch):
+        raise ValueError(f'repo branch has unsafe characters: {branch}')
+    if branch.startswith('/') or branch.endswith('/') or '..' in branch or '@{' in branch:
+        raise ValueError(f'repo branch has unsafe path components: {branch}')
+
+
+def load_config() -> dict:
+    return json.loads(CONFIG.read_text(encoding='utf-8'))
+
+
+def repo_cfg(cfg: dict, alias: str) -> dict:
+    repos = cfg.get('repos', {})
+    if alias not in repos:
+        raise ValueError(f'unknown repo alias: {alias}')
+    return repos[alias]
+
+
+def safe_absolute_path(path: Path, label: str) -> Path:
+    raw = str(path)
+    if not raw.startswith('/'):
+        raise ValueError(f'{label} must be absolute')
+    if not re.match(r'^/[A-Za-z0-9._+/-]+$', raw):
+        raise ValueError(f'{label} contains unsafe characters')
+    if '..' in path.parts:
+        raise ValueError(f'{label} contains unsafe path components')
+    return path
+
+
+def path_is_under(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def git_common_dir(repo: Path) -> Path:
+    raw = run(['git', '-C', str(repo), 'rev-parse', '--git-common-dir']).stdout.decode().strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = repo / path
+    return path.resolve()
+
+
+def validate_sync_bundle(path_arg: str) -> Path:
+    bundle = Path(path_arg)
+    if not bundle.is_absolute():
+        raise ValueError('broker returned a relative bundle path')
+    if bundle.parent.parent != EXCHANGE_DIR or not bundle.parent.name.startswith('robokitty-sync.'):
+        raise ValueError('broker returned an unexpected bundle path')
+    st = bundle.lstat()
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise ValueError('broker bundle must be a regular file')
+    return bundle
+
+
+def bundle_refs(bundle: Path) -> list[str]:
+    output = run(['git', 'bundle', 'list-heads', str(bundle)]).stdout.decode().splitlines()
+    refs: list[str] = []
+    for line in output:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith('refs/'):
+            refs.append(parts[1])
+    if not refs:
+        raise ValueError('broker bundle contains no refs')
+    return refs
+
+
+def import_sync_bundle(source_path: Path, bundle: Path, default_branch: str) -> str:
+    refs = bundle_refs(bundle)
+    imported = False
+    for prefix in ('refs/remotes/origin/', 'refs/heads/'):
+        for ref in refs:
+            if not ref.startswith(prefix):
+                continue
+            branch = ref[len(prefix):]
+            validate_repo_branch(branch)
+            run([
+                'git', '-C', str(source_path), 'fetch', '--prune', str(bundle),
+                f'{ref}:refs/remotes/origin/{branch}',
+            ])
+            imported = True
+    if not imported:
+        raise ValueError('broker bundle contains no importable branch refs')
+
+    base_ref = f'refs/remotes/origin/{default_branch}'
+    try:
+        return run([
+            'git', '-C', str(source_path), 'rev-parse', '--verify',
+            base_ref + '^{commit}',
+        ]).stdout.decode().strip()
+    except RuntimeError as ex:
+        raise RuntimeError(f'brokered sync did not provide default branch ref: {base_ref}') from ex
+
+
 def validate_body_file(path_arg: str, worktree: Path) -> Path:
     raw = Path(path_arg)
     if raw.is_absolute() or '..' in raw.parts:
@@ -81,6 +183,19 @@ def handoff_group_gid() -> int:
             'the managed runner user with the broker handoff group'
         )
     return gid
+
+
+def require_runner_context() -> None:
+    try:
+        runner_uid = pwd.getpwnam(RUNNER_USER).pw_uid
+    except KeyError as ex:
+        raise RuntimeError(f'runner user is unavailable: {RUNNER_USER}') from ex
+    if os.geteuid() != runner_uid:
+        raise RuntimeError(
+            f'repo sync must run as {RUNNER_USER}; use: '
+            f'sudo -u {RUNNER_USER} -- githubctl repo sync --repo <alias> --format json'
+        )
+    handoff_group_gid()
 
 
 def make_exchange_dir() -> Path:
@@ -200,33 +315,125 @@ def prepare_comment(args: argparse.Namespace) -> list[str]:
     ]
 
 
-def call_broker(args: list[str]) -> int:
+def broker_request(args: list[str]) -> dict:
     request = json.dumps({'argv': args}).encode('utf-8')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.connect(SOCKET_PATH)
+        sock.sendall(request)
+        sock.shutdown(socket.SHUT_WR)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise RuntimeError('broker response is too large')
+    return json.loads(b''.join(chunks).decode('utf-8'))
+
+
+def call_broker(args: list[str]) -> int:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.connect(SOCKET_PATH)
-            sock.sendall(request)
-            sock.shutdown(socket.SHUT_WR)
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = sock.recv(65536)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-                if total > MAX_RESPONSE_BYTES:
-                    raise RuntimeError('broker response is too large')
+        response = broker_request(args)
     except OSError as ex:
         print(f'githubctl broker unavailable at {SOCKET_PATH}: {ex}', file=sys.stderr)
         return 1
-
-    response = json.loads(b''.join(chunks).decode('utf-8'))
     if response.get('stdout'):
         sys.stdout.write(response['stdout'])
     if response.get('stderr'):
         sys.stderr.write(response['stderr'])
     return int(response.get('rc', 1))
+
+
+def prepare_repo_sync(args: argparse.Namespace) -> int:
+    require_runner_context()
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    if not repo.get('brokered_sync'):
+        raise ValueError('repo is not configured for brokered sync')
+
+    response = broker_request(['repo', 'sync', '--repo', args.repo, '--format', args.format])
+    if response.get('stderr'):
+        sys.stderr.write(response['stderr'])
+    if int(response.get('rc', 1)) != 0:
+        if response.get('stdout'):
+            sys.stdout.write(response['stdout'])
+        return int(response.get('rc', 1))
+
+    payload = json.loads(response.get('stdout') or '{}')
+    if not payload.get('ok'):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 1
+
+    bundle = validate_sync_bundle(payload['bundle_file'])
+    try:
+        root_dir = safe_absolute_path(Path(cfg['root']).resolve(), 'configured root')
+        workdir = safe_absolute_path(Path(cfg['workdir']).resolve(), 'configured workdir')
+        source_parent = safe_absolute_path(WORKTREE_SOURCE_DIR.resolve(), 'worktree source directory')
+        source_path = safe_absolute_path(Path(repo['source_path']).resolve(strict=False), 'repo source path')
+        repo_path = safe_absolute_path(Path(repo['path']).resolve(strict=False), 'repo path')
+        default_branch = str(repo.get('default_branch', 'main'))
+
+        if source_path.parent.resolve() != source_parent:
+            raise ValueError('repo source path must live directly under the worktree source directory')
+        if source_path.exists() and source_path.is_symlink():
+            raise ValueError('repo source path must not be a symlink')
+        if not path_is_under(repo_path, root_dir) or not path_is_under(repo_path, workdir):
+            raise ValueError('repo path must live under the managed workdir')
+        if repo_path.exists() and repo_path.is_symlink():
+            raise ValueError('repo path must not be a symlink')
+    except Exception:
+        shutil.rmtree(bundle.parent, ignore_errors=True)
+        raise
+
+    try:
+        source_parent.mkdir(parents=True, exist_ok=True)
+        if not source_path.exists():
+            run(['git', 'init', '--bare', str(source_path)])
+        if not source_path.is_dir():
+            raise ValueError('repo source path is not a directory')
+        is_bare = run(['git', '-C', str(source_path), 'rev-parse', '--is-bare-repository']).stdout.decode().strip()
+        if is_bare != 'true':
+            raise ValueError('repo source path is not a bare repository')
+
+        base_commit = import_sync_bundle(source_path, bundle, default_branch)
+        existing_origin = subprocess.run(
+            ['git', '-C', str(source_path), 'remote', 'get-url', 'origin'],
+            capture_output=True,
+            check=False,
+        )
+        if existing_origin.returncode == 0:
+            run(['git', '-C', str(source_path), 'remote', 'remove', 'origin'])
+        run(['git', '-C', str(source_path), 'remote', 'add', 'origin', str(source_path)])
+
+        repo_path.parent.mkdir(parents=True, exist_ok=True)
+        if not repo_path.exists():
+            run(['git', '-C', str(source_path), 'worktree', 'add', '-B', default_branch, str(repo_path), base_commit])
+        else:
+            if not repo_path.is_dir():
+                raise ValueError('repo path exists and is not a directory')
+            if git_common_dir(repo_path) != source_path.resolve():
+                raise ValueError('repo path does not belong to the brokered source repository')
+            dirty = run(['git', '-C', str(repo_path), 'status', '--porcelain']).stdout.decode().strip()
+            if dirty:
+                raise ValueError('repo checkout has uncommitted changes; clean it before brokered sync')
+            run(['git', '-C', str(repo_path), 'checkout', '-B', default_branch, base_commit])
+            run(['git', '-C', str(repo_path), 'reset', '--hard', base_commit])
+
+        print(json.dumps({
+            'ok': True,
+            'repo': payload['repo'],
+            'alias': args.repo,
+            'path': str(repo_path),
+            'source_path': str(source_path),
+            'default_branch': default_branch,
+            'synced_refs': payload.get('synced_refs', []),
+        }, indent=2, sort_keys=True))
+        return 0
+    finally:
+        shutil.rmtree(bundle.parent, ignore_errors=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -250,6 +457,12 @@ def main(argv: list[str] | None = None) -> int:
     audit = sub.add_parser('audit')
     audit.add_argument('--limit', type=int, default=20)
     audit.add_argument('--format', default='json', choices=['json'])
+
+    repo = sub.add_parser('repo')
+    reposub = repo.add_subparsers(dest='repocmd', required=True)
+    sync = reposub.add_parser('sync')
+    sync.add_argument('--repo', required=True)
+    sync.add_argument('--format', default='json', choices=['json'])
 
     pr = sub.add_parser('pr')
     prsub = pr.add_subparsers(dest='prcmd', required=True)
@@ -275,6 +488,8 @@ def main(argv: list[str] | None = None) -> int:
             return call_broker(['status', '--repo', args.repo, '--format', args.format])
         if args.cmd == 'audit':
             return call_broker(['audit', '--limit', str(args.limit), '--format', args.format])
+        if args.cmd == 'repo' and args.repocmd == 'sync':
+            return prepare_repo_sync(args)
         if args.cmd == 'pr' and args.prcmd == 'view':
             return call_broker([
                 'pr', 'view', '--repo', args.repo, '--number', str(args.number),

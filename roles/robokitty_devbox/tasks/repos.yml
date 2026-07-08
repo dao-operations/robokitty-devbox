@@ -10,6 +10,7 @@
   loop: "{{ robokitty_repos + ([robokitty_infra_repo] if robokitty_infra_repo else []) }}"
   loop_control:
     label: "{{ item.alias }}"
+  when: not (item.brokered_sync | default(item.private | default(false)) | bool)
 
 - name: Configure Git identity for runner user
   ansible.builtin.shell: |

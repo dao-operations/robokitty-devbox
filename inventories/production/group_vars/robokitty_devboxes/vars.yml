@@ -37,9 +37,33 @@ robokitty_git_user_email: "{{ vault_robokitty_git_user_email }}"
 robokitty_git_signing_private_key_pem: "{{ vault_robokitty_git_signing_private_key_pem }}"
 robokitty_git_signing_public_key: "{{ vault_robokitty_git_signing_public_key }}"
 
-# Add target application repositories after the devbox bootstrap is healthy.
-# The first production smoke can use the infra repo alias below.
-robokitty_repos: []
+robokitty_repos:
+  - alias: governance-apps
+    owner: yearn
+    repo: governance-apps
+    default_branch: master
+    clone_url: https://github.com/yearn/governance-apps.git
+    path: /srv/robokitty-devbox/work/governance-apps
+    allowed_base_branches:
+      - master
+    allow_push: true
+    allow_pr_create: true
+    container_image: docker.io/library/node:24-bookworm
+    container_workdir: .
+
+  - alias: gov-apps-stats
+    owner: dao-operations
+    repo: gov-apps-stats
+    private: true
+    default_branch: master
+    clone_url: https://github.com/dao-operations/gov-apps-stats.git
+    path: /srv/robokitty-devbox/work/gov-apps-stats
+    allowed_base_branches:
+      - master
+    allow_push: true
+    allow_pr_create: true
+    container_image: docker.io/library/rust:1.88-bookworm
+    container_workdir: .
 
 robokitty_infra_repo:
   alias: robokitty-infra

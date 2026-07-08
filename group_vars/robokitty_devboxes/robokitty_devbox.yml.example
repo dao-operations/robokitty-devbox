@@ -38,6 +38,9 @@ robokitty_repos:
   - alias: dao
     owner: example-org
     repo: example-frontend
+    # Set private: true for private repos. Those are synced through
+    # githubctl repo sync so the runner never receives the GitHub PAT.
+    private: false
     default_branch: main
     clone_url: https://github.com/example-org/example-frontend.git
     path: /srv/robokitty-devbox/work/example-frontend

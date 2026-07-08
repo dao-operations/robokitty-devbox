@@ -112,6 +112,15 @@ temporary directory, applies the patch, blocks workflow file changes, and
 pushes only the resulting squash commit to the separate GitHub identity's fork.
 The PR is opened back against the configured upstream repository.
 
+For repos marked `private: true`, the runner still does not receive a GitHub
+credential. `githubctl repo sync` asks the broker to fetch the configured
+upstream with the PAT and write a temporary Git bundle under the same exchange
+directory. The runner imports that bundle into a local bare source repo under
+`/var/lib/robokitty-devbox/worktree-sources` and creates a normal runner-owned
+checkout under `/srv/robokitty-devbox/work`. After sync, Codex can read and edit
+the private repository contents because that is the intended work surface, but
+it still cannot read the PAT or signing key.
+
 Because Linux sandboxing uses `no_new_privs`, a sandboxed command cannot use
 `sudo` to cross from `agent` to `agent-git`. The playbook therefore does not
 give the runner a sudo path to `agent-git`. Instead, the public `githubctl`
@@ -140,6 +149,7 @@ Allowed P0 operations:
 
 - status,
 - audit recent `githubctl` invocations,
+- sync configured brokered private repos into credential-free local checkouts,
 - submit `agent/*` branch as draft PR,
 - view PR,
 - view checks,

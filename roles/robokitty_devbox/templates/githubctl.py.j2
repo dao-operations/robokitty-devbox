@@ -33,9 +33,11 @@ AUDIT_LOG = AUDIT_DIR / 'githubctl-audit.jsonl'
 BODY_FILE_MAX_BYTES = 256 * 1024
 PATCH_FILE_MAX_BYTES = 50 * 1024 * 1024
 BRANCH_SUFFIX_RE = re.compile(r'^[A-Za-z0-9._-]+$')
+REF_NAME_RE = re.compile(r'^[A-Za-z0-9._/-]+$')
 SECRET_SUFFIXES = {'.key', '.pem', '.p12', '.pfx'}
 PREPARED_FILE_PARENT = Path('{{ robokitty_github_broker_exchange_dir }}')
 PREPARED_FILE_PREFIX = str(PREPARED_FILE_PARENT / 'robokitty-submit.')
+REPO_SYNC_FILE_PREFIX = str(PREPARED_FILE_PARENT / 'robokitty-sync.')
 
 class AuditError(RuntimeError):
     pass
@@ -139,6 +141,7 @@ def audit(args, ok: bool, error_type: str | None = None, phase: str = 'complete'
         'phase': phase,
         'ok': ok,
         'cmd': getattr(args, 'cmd', None),
+        'repocmd': getattr(args, 'repocmd', None),
         'prcmd': getattr(args, 'prcmd', None),
         'repo': getattr(args, 'repo', None),
         'branch': getattr(args, 'branch', None),
@@ -319,6 +322,13 @@ def validate_branch(branch: str, cfg: dict):
         raise ValueError('branch name too close to protected branch')
 
 
+def validate_base_ref(ref: str) -> None:
+    if not ref or not REF_NAME_RE.match(ref):
+        raise ValueError(f'base branch has unsafe characters: {ref}')
+    if ref.startswith('/') or ref.endswith('/') or '..' in ref or '@{' in ref:
+        raise ValueError(f'base branch has unsafe path components: {ref}')
+
+
 def github_clone_url(repo: dict) -> str:
     return f"https://github.com/{repo['full_name']}.git"
 
@@ -489,7 +499,10 @@ def cleanup_prepared_file(path_arg: str | None) -> None:
     if not path_arg:
         return
     path = Path(path_arg)
-    if path.is_absolute() and str(path).startswith(PREPARED_FILE_PREFIX):
+    if path.is_absolute() and (
+        str(path).startswith(PREPARED_FILE_PREFIX) or
+        str(path).startswith(REPO_SYNC_FILE_PREFIX)
+    ):
         shutil.rmtree(path.parent, ignore_errors=True)
 
 
@@ -577,12 +590,97 @@ def cmd_status(args) -> int:
         'commit_signing_enabled': SIGN_COMMITS,
         'signing_key': str(SIGNING_PUBLIC_KEY) if SIGN_COMMITS else None,
         'default_branch_visible': upstream_visible,
+        'brokered_sync': bool(repo.get('brokered_sync')),
+        'local_path': repo.get('path'),
+        'source_path': repo.get('source_path'),
         'fork_visible': fork_git_visible or fork_api_visible,
         'fork_git_visible': fork_git_visible,
         'fork_api_visible': fork_api_visible,
         'allowed_base_branches': repo.get('allowed_base_branches', []),
     })
     return 0
+
+
+def repo_sync_branches(repo: dict) -> list[str]:
+    branches: list[str] = []
+    for branch in [repo.get('default_branch', 'main'), *repo.get('allowed_base_branches', [])]:
+        branch = str(branch)
+        validate_base_ref(branch)
+        if branch not in branches:
+            branches.append(branch)
+    return branches
+
+
+def make_repo_sync_exchange_dir() -> Path:
+    try:
+        st = PREPARED_FILE_PARENT.lstat()
+    except OSError as ex:
+        raise RuntimeError(f'broker exchange directory is unavailable: {ex}') from ex
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError('broker exchange path must be a real directory')
+    path = Path(tempfile.mkdtemp(prefix='robokitty-sync.', dir=str(PREPARED_FILE_PARENT)))
+    os.chmod(path, 0o770)
+    return path
+
+
+def cmd_repo_sync(args) -> int:
+    ensure_json_format(args)
+    cfg = load_config()
+    repo = repo_cfg(cfg, args.repo)
+    if not repo.get('brokered_sync'):
+        raise ValueError('repo is not configured for brokered sync')
+    gh_token = token()
+    assert_expected_owner(cfg, gh_token)
+    branches = repo_sync_branches(repo)
+    tmp = Path(tempfile.mkdtemp(prefix='robokitty-repo-sync.'))
+    exchange: Path | None = None
+    try:
+        bare = tmp / 'repo.git'
+        run(['git', 'init', '--bare', str(bare)])
+        run(['git', '-C', str(bare), 'remote', 'add', 'origin', upstream_clone_url(repo)])
+        synced_refs: list[str] = []
+        for branch in branches:
+            remote_ref = f'refs/remotes/origin/{branch}'
+            run(
+                ['git', '-C', str(bare), 'fetch', '--no-tags', 'origin', f'refs/heads/{branch}:{remote_ref}'],
+                token=gh_token,
+                for_git=True,
+            )
+            synced_refs.append(remote_ref)
+            if branch == repo.get('default_branch', 'main'):
+                head_ref = f'refs/heads/{branch}'
+                run(['git', '-C', str(bare), 'update-ref', head_ref, remote_ref])
+                synced_refs.append(head_ref)
+
+        refs = run([
+            'git', '-C', str(bare), 'for-each-ref', '--format=%(refname)',
+            'refs/heads', 'refs/remotes/origin',
+        ]).stdout.decode().splitlines()
+        if not refs:
+            raise RuntimeError('brokered sync produced no refs')
+
+        exchange = make_repo_sync_exchange_dir()
+        bundle_file = exchange / 'repo.bundle'
+        run(['git', '-C', str(bare), 'bundle', 'create', str(bundle_file), *refs])
+        os.chmod(bundle_file, 0o660)
+        json_out({
+            'ok': True,
+            'repo': repo['full_name'],
+            'alias': repo['alias'],
+            'bundle_file': str(bundle_file),
+            'default_branch': repo.get('default_branch', 'main'),
+            'allowed_base_branches': repo.get('allowed_base_branches', []),
+            'synced_refs': synced_refs,
+            'path': repo['path'],
+            'source_path': repo.get('source_path'),
+        })
+        return 0
+    except Exception:
+        if exchange is not None:
+            shutil.rmtree(exchange, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def cmd_submit(args) -> int:
@@ -796,6 +894,13 @@ def main(argv=None) -> int:
     s.add_argument('--limit', type=audit_limit, default=20)
     s.add_argument('--format', default='json', choices=['json'])
     s.set_defaults(func=cmd_audit)
+
+    s = sub.add_parser('repo')
+    reposub = s.add_subparsers(dest='repocmd', required=True)
+    sync = reposub.add_parser('sync')
+    sync.add_argument('--repo', required=True)
+    sync.add_argument('--format', default='json', choices=['json'])
+    sync.set_defaults(func=cmd_repo_sync)
 
     s = sub.add_parser('submit')
     s.add_argument('--repo', required=True)

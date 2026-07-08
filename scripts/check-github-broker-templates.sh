@@ -129,6 +129,22 @@ grep -F "HANDOFF_GROUP = '$broker_handoff_group'" "$tmpdir/githubctl-prep.py" >/
   exit 1
 }
 
+grep -F "repo sync must run as" "$tmpdir/githubctl-prep.py" >/dev/null || {
+  echo "error: githubctl-prep must require runner-owned repo sync" >&2
+  exit 1
+}
+
+grep -F "cmd == 'repo' and len(argv) >= 2 and argv[1] == 'sync'" \
+  "$tmpdir/githubctl-brokerd.py" >/dev/null || {
+    echo "error: GitHub broker daemon must explicitly allow only repo sync" >&2
+    exit 1
+  }
+
+grep -F "repo is not configured for brokered sync" "$tmpdir/githubctl.py" >/dev/null || {
+  echo "error: githubctl must reject repo sync for repos outside brokered_sync" >&2
+  exit 1
+}
+
 grep -F "runner can write githubctl broker exchange directory" \
   "$tmpdir/robokitty-security-check.sh" >/dev/null || {
     echo "error: security check must validate runner access to broker exchange path" >&2
@@ -240,6 +256,128 @@ except ValueError as ex:
     assert "uncommitted changes other than body-file" in str(ex)
 else:
     raise AssertionError("submit prep accepted unrelated uncommitted changes")
+PY
+
+private_seed="$tmpdir/private-seed"
+private_origin="$tmpdir/private-origin.git"
+private_bare="$tmpdir/private-broker.git"
+private_exchange="$tmpdir/private-exchange"
+private_bundle_dir="$private_exchange/robokitty-sync.test"
+private_bundle="$private_bundle_dir/repo.bundle"
+private_root="$tmpdir/private-root"
+private_workdir="$private_root/work"
+private_source_dir="$tmpdir/private-sources"
+private_source="$private_source_dir/private-app.git"
+private_checkout="$private_workdir/private-app"
+private_config="$tmpdir/private-repos.json"
+
+mkdir -p "$private_bundle_dir" "$private_workdir" "$private_source_dir"
+git -C "$private_seed" init -q -b main 2>/dev/null || git init -q -b main "$private_seed"
+git -C "$private_seed" config user.name "Robokitty Private Test"
+git -C "$private_seed" config user.email "robokitty-private-test@example.invalid"
+git -C "$private_seed" config commit.gpgsign false
+printf "private\n" >"$private_seed/README.md"
+git -C "$private_seed" add README.md
+git -C "$private_seed" commit -q -m "chore: seed private repo"
+git init --bare -q -b main "$private_origin"
+git -C "$private_seed" remote add origin "$private_origin"
+git -C "$private_seed" push -q -u origin main
+git init --bare -q "$private_bare"
+git -C "$private_bare" fetch -q --no-tags "$private_origin" \
+  refs/heads/main:refs/remotes/origin/main
+git -C "$private_bare" update-ref refs/heads/main refs/remotes/origin/main
+git -C "$private_bare" bundle create "$private_bundle" refs/heads/main >/dev/null
+
+cat >"$private_config" <<JSON
+{
+  "root": "$private_root",
+  "workdir": "$private_workdir",
+  "repos": {
+    "private-app": {
+      "alias": "private-app",
+      "full_name": "example/private-app",
+      "path": "$private_checkout",
+      "source_path": "$private_source",
+      "default_branch": "main",
+      "allowed_base_branches": ["main"],
+      "brokered_sync": true
+    }
+  }
+}
+JSON
+
+UV_CACHE_DIR="${UV_CACHE_DIR:-$repo_root/.uv-cache}" \
+UV_PYTHON_PREFERENCE=only-system \
+  "$UV_BIN" run python - \
+    "$tmpdir/githubctl-prep.py" \
+    "$private_config" \
+    "$private_exchange" \
+    "$private_source_dir" \
+    "$private_bundle" \
+    "$private_checkout" \
+    "$private_source" <<'PY'
+from __future__ import annotations
+
+import argparse
+import contextlib
+import importlib.util
+import io
+import json
+import sys
+from pathlib import Path
+
+module_path = Path(sys.argv[1])
+config = Path(sys.argv[2])
+exchange_dir = Path(sys.argv[3])
+source_dir = Path(sys.argv[4])
+bundle = Path(sys.argv[5])
+checkout = Path(sys.argv[6])
+source = Path(sys.argv[7])
+
+spec = importlib.util.spec_from_file_location("githubctl_prep_sync_rendered", module_path)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+module.CONFIG = config
+module.EXCHANGE_DIR = exchange_dir
+module.WORKTREE_SOURCE_DIR = source_dir
+original_run = module.run
+commands: list[list[str]] = []
+
+def recording_run(argv: list[str], **kwargs):
+    commands.append(argv)
+    return original_run(argv, **kwargs)
+
+def broker_request(args: list[str]) -> dict:
+    assert args == ["repo", "sync", "--repo", "private-app", "--format", "json"]
+    return {
+        "rc": 0,
+        "stderr": "",
+        "stdout": json.dumps({
+            "ok": True,
+            "repo": "example/private-app",
+            "alias": "private-app",
+            "bundle_file": str(bundle),
+            "default_branch": "main",
+            "synced_refs": ["refs/heads/main"],
+            "path": str(checkout),
+            "source_path": str(source),
+        }),
+    }
+
+module.broker_request = broker_request
+module.require_runner_context = lambda: None
+module.run = recording_run
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = module.prepare_repo_sync(argparse.Namespace(repo="private-app", format="json"))
+assert rc == 0
+assert checkout.joinpath("README.md").read_text() == "private\n"
+assert source.is_dir()
+module.run(["git", "-C", str(source), "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"])
+worktree_adds = [cmd for cmd in commands if "worktree" in cmd and "add" in cmd]
+assert worktree_adds, commands
+assert not worktree_adds[0][-1].startswith("refs/"), worktree_adds[0]
 PY
 
 echo "OK: rendered GitHub broker templates compile and keep exchange state outside workdir"

@@ -319,6 +319,12 @@
       - item.path is defined
       - item.path | string is search('^' ~ robokitty_root ~ '/')
       - >-
+        not (item.brokered_sync | default(item.private | default(false)) | bool) or
+        (robokitty_github_broker_enabled | bool)
+      - >-
+        not (item.brokered_sync | default(item.private | default(false)) | bool) or
+        (item.path | string is search('^' ~ robokitty_workdir ~ '/'))
+      - >-
         item.container_image |
         default(robokitty_podman_default_image) |
         string is match('^[A-Za-z0-9][A-Za-z0-9._:/@+-]+$')

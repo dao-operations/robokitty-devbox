@@ -68,6 +68,8 @@ Tasks:
 - Store a dedicated SSH commit signing key under `agent-git`.
 - Keep the PAT and signing private key unreadable by the Codex runner and bridge users.
 - Implement `githubctl status`, `submit`, `pr view`, `pr checks`, `pr comment`.
+- Implement brokered sync for configured private repositories without exposing
+  the GitHub PAT to the Codex runner.
 - Safe-squash submission through clean temporary clone.
 - Push agent branches to the separate identity's fork and open PRs upstream.
 - Sign broker-created squash commits by default.
@@ -76,6 +78,8 @@ Tasks:
 Exit criteria:
 
 - Codex can submit draft PR through `githubctl`.
+- Codex can sync configured private repositories into local credential-free
+  worktrees.
 - Codex cannot read GitHub PAT.
 - Codex cannot read Git signing private key.
 - No merge or arbitrary API passthrough exists.
@@ -92,6 +96,8 @@ Tasks:
 - For the infra repo, create those task worktrees from a runner-owned source
   repo outside the canonical checkout so Codex does not mutate protected
   canonical `.git` metadata.
+- For broker-synced private repos, create task worktrees from the runner-owned
+  local source repo created by `githubctl repo sync`.
 
 Exit criteria:
 

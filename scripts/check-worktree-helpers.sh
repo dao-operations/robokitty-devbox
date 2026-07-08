@@ -98,6 +98,12 @@ init_repo() {
 
 init_repo "$workdir/app" "$tmpdir/app-origin.git"
 init_repo "$infra_dir" "$tmpdir/infra-origin.git"
+init_repo "$tmpdir/private-seed" "$tmpdir/private-origin.git"
+git init --bare -q "$source_dir/private-app.git"
+git -C "$source_dir/private-app.git" fetch --no-tags "$tmpdir/private-origin.git" \
+  refs/heads/main:refs/remotes/origin/main >/dev/null
+git -C "$source_dir/private-app.git" worktree add --detach "$workdir/private-app" \
+  refs/remotes/origin/main >/dev/null
 
 cat >"$config_dir/repos.json" <<JSON
 {
@@ -111,6 +117,14 @@ cat >"$config_dir/repos.json" <<JSON
       "path": "$workdir/app",
       "default_branch": "main",
       "allowed_base_branches": ["main"]
+    },
+    "private-app": {
+      "alias": "private-app",
+      "path": "$workdir/private-app",
+      "source_path": "$source_dir/private-app.git",
+      "default_branch": "main",
+      "allowed_base_branches": ["main"],
+      "brokered_sync": true
     },
     "robokitty-infra": {
       "alias": "robokitty-infra",
@@ -149,6 +163,16 @@ assert_eq "$source_dir/infra" "$(git_common_dir "$infra_wt")" "infra source comm
 [ ! -e "$infra_wt" ] || fail "infra worktree was not deleted"
 if git -C "$source_dir/infra" show-ref --verify --quiet refs/heads/agent/wp5-infra; then
   fail "infra source local branch was not deleted"
+fi
+
+private_wt="$("$new" private-app agent/wp5-private main)"
+assert_eq "$workdir/private-app.agent.wp5-private" "$private_wt" "private worktree path"
+assert_eq "agent/wp5-private" "$(git -C "$private_wt" branch --show-current)" "private worktree branch"
+assert_eq "$source_dir/private-app.git" "$(git_common_dir "$private_wt")" "private source common dir"
+"$delete" private-app agent/wp5-private --delete-local-branch
+[ ! -e "$private_wt" ] || fail "private worktree was not deleted"
+if git -C "$source_dir/private-app.git" show-ref --verify --quiet refs/heads/agent/wp5-private; then
+  fail "private source local branch was not deleted"
 fi
 
 if "$new" app main main >/dev/null 2>&1; then

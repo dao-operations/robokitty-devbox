@@ -1,0 +1,29 @@
+---
+# Create the real file with:
+# ansible-vault create inventories/production/group_vars/robokitty_devboxes/vault.yml
+#
+# Do not commit this example with real values. Commit only the encrypted
+# inventories/production/group_vars/robokitty_devboxes/vault.yml file.
+
+vault_robokitty_cloudflare_ssh_hostname: ssh.example.com
+vault_robokitty_ansible_user: root
+vault_robokitty_ansible_ssh_common_args: "-o ProxyCommand='cloudflared access ssh --hostname %h'"
+vault_robokitty_cloudflared_tunnel_token: "VAULT_ME"
+
+vault_robokitty_takopi_bot_token: "VAULT_ME"
+vault_robokitty_takopi_chat_id: 123456789
+vault_robokitty_takopi_allowed_user_ids:
+  - 123456789
+
+vault_robokitty_github_token: "github_pat_VAULT_ME"
+# Optional fail-closed assertion. Leave empty to derive the contribution owner
+# from the GitHub PAT login at runtime.
+vault_robokitty_github_expected_owner: ""
+
+vault_robokitty_git_user_name: Robokitty Agent
+vault_robokitty_git_user_email: robokitty-agent@example.com
+vault_robokitty_git_signing_private_key_pem: |
+  -----BEGIN OPENSSH PRIVATE KEY-----
+  VAULT_ME
+  -----END OPENSSH PRIVATE KEY-----
+vault_robokitty_git_signing_public_key: "ssh-ed25519 AAAA_VAULT_ME robokitty-agent-signing"

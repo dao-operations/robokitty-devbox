@@ -1,0 +1,55 @@
+---
+ansible_host: "{{ vault_robokitty_cloudflare_ssh_hostname }}"
+ansible_user: "{{ vault_robokitty_ansible_user | default('root') }}"
+ansible_ssh_common_args: >-
+  {{ vault_robokitty_ansible_ssh_common_args |
+  default("-o ProxyCommand='cloudflared access ssh --hostname %h'") }}
+
+robokitty_cloudflare_access_enabled: true
+robokitty_cloudflared_tunnel_token: "{{ vault_robokitty_cloudflared_tunnel_token }}"
+
+robokitty_lockdown_public_ssh: true
+robokitty_allowed_ssh_cidrs: []
+robokitty_sshd_listen_addresses:
+  - 127.0.0.1
+robokitty_enable_proc_hardening: true
+
+# Until pinned installer checksums are documented, production bootstrap requires
+# explicit inventory-level acceptance for upstream installer scripts.
+robokitty_codex_installer_allow_unverified: true
+robokitty_codex_installer_unverified_reason: >-
+  Bootstrap accepts the upstream Codex installer script until a pinned artifact is documented.
+robokitty_uv_installer_allow_unverified: true
+robokitty_uv_installer_unverified_reason: >-
+  Bootstrap accepts the upstream uv installer script until a pinned artifact is documented.
+robokitty_takopi_allow_unpinned: true
+robokitty_takopi_unpinned_reason: "Bootstrap accepts latest Takopi until a version pin is selected."
+
+robokitty_takopi_bot_token: "{{ vault_robokitty_takopi_bot_token }}"
+robokitty_takopi_chat_id: "{{ vault_robokitty_takopi_chat_id }}"
+robokitty_takopi_allowed_user_ids: "{{ vault_robokitty_takopi_allowed_user_ids }}"
+
+robokitty_github_token: "{{ vault_robokitty_github_token }}"
+robokitty_github_expected_owner: "{{ vault_robokitty_github_expected_owner | default('') }}"
+
+robokitty_git_user_name: "{{ vault_robokitty_git_user_name | default('Robokitty Agent') }}"
+robokitty_git_user_email: "{{ vault_robokitty_git_user_email }}"
+robokitty_git_signing_private_key_pem: "{{ vault_robokitty_git_signing_private_key_pem }}"
+robokitty_git_signing_public_key: "{{ vault_robokitty_git_signing_public_key }}"
+
+# Add target application repositories after the devbox bootstrap is healthy.
+# The first production smoke can use the infra repo alias below.
+robokitty_repos: []
+
+robokitty_infra_repo:
+  alias: robokitty-infra
+  owner: dao-operations
+  repo: robokitty-devbox
+  default_branch: master
+  clone_url: https://github.com/dao-operations/robokitty-devbox.git
+  path: /srv/robokitty-devbox/infra
+  allowed_base_branches:
+    - master
+  allow_push: true
+  allow_pr_create: true
+  container_image: docker.io/library/ubuntu:24.04

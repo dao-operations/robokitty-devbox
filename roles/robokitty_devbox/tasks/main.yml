@@ -16,10 +16,15 @@
   check_mode: false
   changed_when: false
   failed_when: false
-  loop:
-    - "{{ robokitty_bridge_user }}"
-    - "{{ robokitty_runner_user }}"
-    - "{{ robokitty_git_user }}"
+  loop: >-
+    {{
+      [robokitty_bridge_user, robokitty_runner_user, robokitty_git_user] +
+      (
+        [robokitty_actions_runner_user, robokitty_deploy_runner_user]
+        if (robokitty_deploy_runner_enabled | bool)
+        else []
+      )
+    }}
   register: robokitty_check_user_lookup
   when: ansible_check_mode
   tags: [always]
@@ -101,6 +106,11 @@
 - name: "REPOS | Clone configured repositories and install worktree helpers"
   ansible.builtin.include_tasks: repos.yml
   tags: [repos]
+  when: not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
+
+- name: "DEPLOY | Install self-hosted deploy runner"
+  ansible.builtin.include_tasks: deploy_runner.yml
+  tags: [deploy_runner]
   when: not (robokitty_skip_user_dependent_tasks_in_check_mode | default(false))
 
 - name: "STATUS | Install status and security check helpers"

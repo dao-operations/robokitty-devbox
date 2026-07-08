@@ -1,0 +1,11 @@
+# Managed by robokitty-devbox. Do not edit directly.
+[defaults]
+retry_files_enabled = false
+stdout_callback = default
+interpreter_python = auto_silent
+collections_path = {{ robokitty_deploy_runner_ansible_home }}/collections
+local_tmp = {{ robokitty_deploy_runner_ansible_home }}/tmp/local
+remote_tmp = {{ robokitty_deploy_runner_ansible_home }}/tmp/remote
+
+[privilege_escalation]
+become = false

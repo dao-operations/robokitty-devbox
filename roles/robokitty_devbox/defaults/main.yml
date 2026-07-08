@@ -23,6 +23,7 @@ robokitty_bindir: /usr/local/bin
 
 robokitty_packages:
   - acl
+  - ansible-core
   - apparmor
   - bash
   - bubblewrap
@@ -50,6 +51,7 @@ robokitty_packages:
   - python3-jwt
   - python3-pip
   - python3-requests
+  - python3-yaml
   - ripgrep
   - rsync
   - sqlite3
@@ -188,6 +190,64 @@ robokitty_git_signing_private_key_pem: ""
 robokitty_git_signing_private_key_src: ""
 robokitty_git_signing_public_key: ""
 robokitty_git_signing_key_path: "/home/{{ robokitty_git_user }}/.ssh/robokitty-signing-key"
+
+robokitty_deploy_runner_enabled: false
+robokitty_actions_runner_user: agent-actions
+robokitty_actions_runner_home: "/home/{{ robokitty_actions_runner_user }}"
+robokitty_actions_runner_dir: "{{ robokitty_actions_runner_home }}/actions-runner"
+robokitty_actions_runner_work_subdir: _work
+robokitty_actions_runner_work_dir: "{{ robokitty_actions_runner_dir }}/{{ robokitty_actions_runner_work_subdir }}"
+robokitty_actions_runner_service_name: robokitty-actions-runner
+robokitty_actions_runner_github_url: ""
+robokitty_actions_runner_name: "{{ robokitty_hostname }}"
+robokitty_actions_runner_labels:
+  - robokitty-devbox
+  - infra-deploy
+robokitty_actions_runner_package_url: ""
+robokitty_actions_runner_package_checksum: ""
+robokitty_actions_runner_archive: >-
+  /var/cache/robokitty-devbox/actions-runner/actions-runner-{{
+    robokitty_actions_runner_package_checksum | regex_replace('^sha256:', '')
+  }}.tar.gz
+robokitty_actions_runner_registration_token: ""
+robokitty_actions_runner_disable_update: true
+
+robokitty_deploy_runner_user: agent-deploy
+robokitty_deploy_runner_home: "/home/{{ robokitty_deploy_runner_user }}"
+robokitty_deploy_runner_github_url: ""
+robokitty_deploy_runner_repository: >-
+  {{
+    (robokitty_infra_repo.owner ~ '/' ~ robokitty_infra_repo.repo)
+    if robokitty_infra_repo
+    else ''
+  }}
+robokitty_deploy_runner_repository_name: >-
+  {{
+    robokitty_deploy_runner_repository.split('/')[-1]
+    if '/' in robokitty_deploy_runner_repository
+    else robokitty_deploy_runner_repository
+  }}
+robokitty_deploy_runner_branch: >-
+  {{
+    robokitty_infra_repo.default_branch | default('master')
+    if robokitty_infra_repo
+    else 'master'
+  }}
+robokitty_deploy_runner_secret_custody_ack: ""
+robokitty_deploy_runner_github_controls_ack: ""
+robokitty_deploy_runner_repo_visibility_ack: ""
+robokitty_deploy_runner_github_removed_ack: ""
+robokitty_deploy_runner_vault_password: ""
+robokitty_deploy_runner_vault_password_src: ""
+robokitty_deploy_runner_vault_password_file: >-
+  {{ robokitty_deploy_runner_home }}/.config/robokitty-devbox/ansible-vault-password
+robokitty_deploy_runner_checkout_dir: "{{ robokitty_deploy_runner_home }}/deploy/infra"
+robokitty_deploy_runner_log_dir: /var/log/robokitty-devbox/deploy
+robokitty_deploy_runner_ansible_home: /var/cache/robokitty-devbox/ansible
+robokitty_deploy_runner_ansible_config: "{{ robokitty_config_dir }}/ansible-deploy.cfg"
+robokitty_deploy_runner_wrapper: "{{ robokitty_bindir }}/robokitty-deploy-infra"
+robokitty_deploy_runner_inventory: inventories/production/hosts.yml
+robokitty_deploy_runner_playbook: playbooks/robokitty_devbox.yml
 
 robokitty_repos: []
 robokitty_infra_repo: null

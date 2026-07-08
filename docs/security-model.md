@@ -14,9 +14,12 @@ This is not a high-assurance production sandbox. It is a practical pilot that ex
 | Codex auth cache | `agent` | yes | technically yes to Codex process, denied to sandboxed commands where possible |
 | GitHub PAT for third identity | `agent-git` | yes | no |
 | Git SSH signing private key | `agent-git` | yes | no |
+| GitHub Actions runner registration | `agent-actions` | yes | no |
+| Deploy vault password, optional pilot | `agent-deploy` | yes | no |
+| Deploy checkout, optional pilot | `agent-deploy` | no secrets expected | no |
 | Worktrees | `agent` | no secrets expected | yes |
 | Live guidance | `agent` | no | yes |
-| Ansible vault | human only | yes | no |
+| Ansible vault | human by default, `agent-deploy` in deploy-runner pilot | yes | no |
 | Cloudflare tunnel token or credentials | root / human vault | yes | no |
 
 ## Codex permissions
@@ -177,6 +180,56 @@ directory for every broker invocation. The Codex runner cannot read that file
 directly; operators and agents use `githubctl audit --format json` for a
 bounded, read-only view of recent broker activity.
 
+## Self-hosted deploy runner pilot
+
+The optional deploy runner is a separate capability boundary from Codex and the
+GitHub broker. It is disabled by default.
+
+When enabled, `agent-actions` runs the GitHub Actions self-hosted runner. It
+can invoke only `/usr/local/bin/robokitty-deploy-infra` through sudo. The
+wrapper requires the workflow's triggering commit SHA, rejects malformed input,
+and fails if the protected branch head has moved before deploy. `agent-actions`
+cannot read the Ansible Vault password and cannot write the deploy checkout.
+
+`agent-deploy` owns the vault password file and the clean deploy checkout. The
+deploy wrapper fetches the configured protected branch into that checkout and
+applies the production playbook through a local Ansible connection. The wrapper
+does not deploy from the mutable GitHub Actions workspace. Ansible runs with
+`env -i`, a fixed root-owned `ANSIBLE_CONFIG`, and a clean checkout working
+directory, so caller workspaces cannot supply Ansible config or plugin paths.
+The `agent-actions` sudo rule resets the caller environment, deletes shell
+startup environment variables, and pins `secure_path`; the wrapper also uses an
+absolute shell interpreter and sets a fixed `PATH` before privileged work.
+
+This is a pilot tradeoff. GitHub no longer holds the vault password, and Codex
+still cannot read it directly, but the VPS now contains deploy capability. A
+reviewed malicious merge can still exfiltrate decrypted secrets because
+Ansible applies reviewed repository code with vault access. The approval gate
+is therefore protected-branch review followed by a GitHub Environment approval.
+The preferred enablement posture is a private infra repository; using a public
+repository requires an explicit `public-repo-risk-accepted` acknowledgement and
+should remain time-boxed.
+
+Ansible Galaxy collections are part of the trusted deploy codebase. Collection
+requirements must use exact versions and allowlisted sources; both CI and the
+deploy wrapper enforce this before collection install. Deploy logs are root-only
+and rotated, but any Ansible task that handles decrypted vault values must still
+use `no_log: true`.
+
+The long-running runner service remains a persistent self-hosted runner, and
+the runner installation is still writable by the job user in this pilot. Runner
+auto-update is disabled so Ansible owns runner binary updates through the pinned
+archive checksum, but this is not a strong sandbox. The service cannot use
+`NoNewPrivileges=true` because the deploy path crosses a narrow sudo boundary,
+and read-only system namespaces would prevent the sudoed Ansible apply from
+managing system files. Treat a future broker or systemd oneshot handoff as the
+preferred hardening path before relying on this beyond the pilot.
+
+The current `githubctl` broker continues to deny workflow file edits and
+workflow dispatch. The first deploy workflow must be added by a human-controlled
+GitHub path, or by a later ADR and broker-policy change that explicitly accepts
+agent-authored workflow updates.
+
 ## Network posture
 
 Codex has internet access for the pilot. That means any file readable by
@@ -187,6 +240,11 @@ Production administrative SSH should use Cloudflare Tunnel plus Cloudflare
 Access. The steady-state VPS should not expose public SSH. The tunnel is for
 operator SSH and Ansible transport; phones reach the system through Telegram,
 not through Cloudflare, Tailscale, or direct VPS access.
+
+The self-hosted GitHub Actions runner does not require inbound access. It
+connects outbound to GitHub over HTTPS, so Cloudflare-only ingress remains the
+steady-state posture. Do not add webhook listeners or public SSH rules for the
+deploy runner.
 
 In production Cloudflare mode, SSHD should listen on `127.0.0.1` and Cloudflare
 Tunnel should forward to `ssh://127.0.0.1:22`. That leaves provider firewall and
@@ -205,9 +263,11 @@ plaintext copies are not allowed in git.
 
 The public encrypted vault must be treated as sensitive ciphertext. A weak vault
 password can be attacked offline, and old ciphertext remains in git history
-after rekeying. A human with vault access applies production Ansible changes;
-agents should maintain variable references, examples, validation, and docs
-without seeing vault values.
+after rekeying. A human with vault access applies production Ansible changes by
+default; agents should maintain variable references, examples, validation, and
+docs without seeing vault values. The optional self-hosted deploy runner is an
+explicit pilot exception: `agent-deploy` may hold a vault password file so
+reviewed merges can apply from the VPS.
 
 ## Security checks
 

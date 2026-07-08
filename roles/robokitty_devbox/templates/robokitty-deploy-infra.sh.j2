@@ -1,0 +1,180 @@
+#!/bin/bash
+set -euo pipefail
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+IFS=$' \t\n'
+unset BASH_ENV ENV CDPATH GLOBIGNORE
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+[ "$#" -eq 1 ] || fail "robokitty-deploy-infra requires the triggering commit SHA"
+expected_sha="$1"
+[[ "$expected_sha" =~ ^[0-9a-f]{40}$ ]] || fail "expected commit SHA must be 40 lowercase hex characters"
+[ "$(id -u)" -eq 0 ] || fail "robokitty-deploy-infra must run as root through sudo"
+
+actions_user={{ robokitty_actions_runner_user | quote }}
+deploy_user={{ robokitty_deploy_runner_user | quote }}
+deploy_home={{ robokitty_deploy_runner_home | quote }}
+github_url={{ robokitty_deploy_runner_github_url | quote }}
+branch={{ robokitty_deploy_runner_branch | quote }}
+checkout={{ robokitty_deploy_runner_checkout_dir | quote }}
+vault_file={{ robokitty_deploy_runner_vault_password_file | quote }}
+log_dir={{ robokitty_deploy_runner_log_dir | quote }}
+ansible_home={{ robokitty_deploy_runner_ansible_home | quote }}
+ansible_config={{ robokitty_deploy_runner_ansible_config | quote }}
+wrapper={{ robokitty_deploy_runner_wrapper | quote }}
+inventory_rel={{ robokitty_deploy_runner_inventory | quote }}
+playbook_rel={{ robokitty_deploy_runner_playbook | quote }}
+lock_file=/run/robokitty-devbox/deploy-infra.lock
+
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "$actions_user" ]; then
+  fail "only $actions_user may invoke this wrapper through sudo"
+fi
+
+require_stat() {
+  local path="$1" expected="$2" actual
+  [ -e "$path" ] || fail "missing path: $path"
+  [ ! -L "$path" ] || fail "path must not be a symlink: $path"
+  actual="$(stat -c '%a %U %G' "$path")"
+  [ "$actual" = "$expected" ] || fail "unsafe ownership or mode for $path: $actual"
+}
+
+umask 077
+install -d -m 0700 -o root -g root /run/robokitty-devbox
+
+checkout_parent="$(dirname "$checkout")"
+wrapper_parent="$(dirname "$wrapper")"
+require_stat "$wrapper_parent" "755 root root"
+require_stat "$wrapper" "755 root root"
+require_stat "$deploy_home" "700 $deploy_user $deploy_user"
+require_stat "$checkout_parent" "700 $deploy_user $deploy_user"
+require_stat "$log_dir" "700 root root"
+require_stat "$ansible_home" "755 root root"
+require_stat "$ansible_home/tmp" "700 root root"
+require_stat "$ansible_home/tmp/local" "700 root root"
+require_stat "$ansible_home/tmp/remote" "700 root root"
+require_stat "$ansible_home/collections" "755 root root"
+
+exec 9>"$lock_file"
+flock -n 9 || fail "another deploy is already running"
+
+log_file="$log_dir/deploy-$(date -u +%Y%m%dT%H%M%SZ).log"
+install -m 0600 -o root -g root /dev/null "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+echo "== robokitty infra deploy =="
+echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "repository=$github_url"
+echo "branch=$branch"
+echo "expected_sha=$expected_sha"
+
+[ -f "$vault_file" ] || fail "vault password file is missing"
+[ ! -L "$vault_file" ] || fail "vault password file must not be a symlink"
+vault_stat="$(stat -c '%a %U %G' "$vault_file")"
+[ "$vault_stat" = "400 {{ robokitty_deploy_runner_user }} {{ robokitty_deploy_runner_user }}" ] || \
+  fail "vault password file ownership or mode is unsafe: $vault_stat"
+
+[ -f "$ansible_config" ] || fail "deploy Ansible config is missing"
+[ ! -L "$ansible_config" ] || fail "deploy Ansible config must not be a symlink"
+ansible_config_stat="$(stat -c '%a %U %G' "$ansible_config")"
+[ "$ansible_config_stat" = "644 root root" ] || \
+  fail "deploy Ansible config ownership or mode is unsafe: $ansible_config_stat"
+
+as_deploy() {
+  runuser -u "$deploy_user" -- env -i \
+    HOME="$deploy_home" \
+    USER="$deploy_user" \
+    LOGNAME="$deploy_user" \
+    LANG=C.UTF-8 \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/home/{{ robokitty_deploy_runner_user }}/.local/bin \
+    "$@"
+}
+
+if [ -e "$checkout" ] && [ ! -d "$checkout/.git" ]; then
+  fail "checkout path exists but is not a Git checkout: $checkout"
+fi
+[ ! -L "$checkout" ] || fail "checkout path must not be a symlink"
+
+if [ ! -d "$checkout/.git" ]; then
+  tmp_checkout="$checkout.tmp.$$"
+  trap 'rm -rf "$tmp_checkout"' EXIT
+  as_deploy git clone --branch "$branch" --single-branch "$github_url" "$tmp_checkout"
+  as_deploy mv "$tmp_checkout" "$checkout"
+  trap - EXIT
+fi
+require_stat "$checkout" "700 $deploy_user $deploy_user"
+
+as_deploy git -C "$checkout" remote set-url origin "$github_url"
+as_deploy git -C "$checkout" fetch --prune origin "$branch"
+remote_head="$(as_deploy git -C "$checkout" rev-parse "origin/$branch")"
+[ "$remote_head" = "$expected_sha" ] || \
+  fail "origin/$branch moved since workflow trigger: expected $expected_sha, got $remote_head"
+as_deploy git -C "$checkout" checkout --detach "$expected_sha"
+as_deploy git -C "$checkout" reset --hard "$expected_sha"
+as_deploy git -C "$checkout" clean -ffdx
+
+head="$(as_deploy git -C "$checkout" rev-parse HEAD)"
+[ "$head" = "$expected_sha" ] || fail "checkout HEAD does not match expected SHA"
+
+status="$(as_deploy git -C "$checkout" status --porcelain)"
+[ -z "$status" ] || fail "checkout is dirty after reset"
+
+empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+as_deploy git -C "$checkout" diff --check "$empty_tree" HEAD
+
+inventory="$checkout/$inventory_rel"
+playbook="$checkout/$playbook_rel"
+[ -f "$inventory" ] || fail "inventory is missing: $inventory_rel"
+[ -f "$playbook" ] || fail "playbook is missing: $playbook_rel"
+
+ansible_env=(
+  -i
+  HOME=/root
+  USER=root
+  LOGNAME=root
+  LANG=C.UTF-8
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin
+  ANSIBLE_CONFIG="$ansible_config"
+  ANSIBLE_HOME="$ansible_home"
+  ANSIBLE_LOCAL_TEMP="$ansible_home/tmp/local"
+  ANSIBLE_REMOTE_TEMP="$ansible_home/tmp/remote"
+  ANSIBLE_COLLECTIONS_PATH="$ansible_home/collections"
+  ANSIBLE_STDOUT_CALLBACK=default
+)
+
+cd "$checkout"
+
+if [ -f "$checkout/requirements.yml" ]; then
+  {{ robokitty_bindir }}/robokitty-check-ansible-requirements "$checkout/requirements.yml"
+  requirements_hash="$(sha256sum "$checkout/requirements.yml" | awk '{ print $1 }')"
+  requirements_hash_file="$ansible_home/requirements.sha256"
+  installed_requirements_hash="$(cat "$requirements_hash_file" 2>/dev/null || true)"
+  if [ "$requirements_hash" != "$installed_requirements_hash" ]; then
+    rm -rf "$ansible_home/collections/ansible_collections"
+  fi
+  env "${ansible_env[@]}" ansible-galaxy collection install \
+    -r "$checkout/requirements.yml" \
+    -p "$ansible_home/collections"
+  printf '%s\n' "$requirements_hash" >"$requirements_hash_file"
+fi
+
+env "${ansible_env[@]}" ansible-playbook \
+  -i "$inventory" \
+  "$playbook" \
+  --syntax-check \
+  --vault-password-file "$vault_file"
+
+env "${ansible_env[@]}" ansible-playbook \
+  -i "$inventory" \
+  "$playbook" \
+  --connection=local \
+  --vault-password-file "$vault_file" \
+  --extra-vars ansible_connection=local \
+  --extra-vars ansible_host=127.0.0.1 \
+  --extra-vars ansible_user=root \
+  --extra-vars ansible_ssh_common_args=
+
+echo "deploy complete: $head"

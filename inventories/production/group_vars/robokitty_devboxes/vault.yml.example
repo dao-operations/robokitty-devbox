@@ -29,3 +29,16 @@ vault_robokitty_git_signing_private_key_pem: |
   VAULT_ME
   -----END OPENSSH PRIVATE KEY-----
 vault_robokitty_git_signing_public_key: "ssh-ed25519 AAAA_VAULT_ME robokitty-agent-signing"
+
+# Optional pilot automation. This puts deploy capability on the VPS while
+# keeping it outside the Codex runner account.
+vault_robokitty_deploy_runner_enabled: false
+vault_robokitty_actions_runner_package_url: >-
+  https://github.com/actions/runner/releases/download/vX.Y.Z/actions-runner-linux-x64-X.Y.Z.tar.gz
+vault_robokitty_actions_runner_package_checksum: "sha256:VAULT_ME"
+vault_robokitty_actions_runner_registration_token: "VAULT_ME"
+vault_robokitty_deploy_runner_secret_custody_ack: "host-resident-vault-password"
+vault_robokitty_deploy_runner_github_controls_ack: "protected-branch-environment-runner-scope"
+vault_robokitty_deploy_runner_repo_visibility_ack: "private-repo"
+vault_robokitty_deploy_runner_github_removed_ack: ""
+vault_robokitty_deploy_runner_vault_password: "VAULT_ME"

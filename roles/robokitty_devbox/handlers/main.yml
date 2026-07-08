@@ -33,6 +33,14 @@
     - robokitty_github_broker_enabled | bool
     - not ansible_check_mode
 
+- name: Restart robokitty-actions-runner
+  ansible.builtin.service:
+    name: "{{ robokitty_actions_runner_service_name }}"
+    state: restarted
+  when:
+    - robokitty_deploy_runner_enabled | bool
+    - not ansible_check_mode
+
 - name: Restart robokitty-cloudflared
   ansible.builtin.systemd:
     name: "{{ robokitty_cloudflared_service_name }}"

@@ -260,6 +260,21 @@ if sudo -n -u {{ robokitty_runner_user }} test -r {{ robokitty_repo_config_file 
 else
   fail "runner cannot read repo routing config"
 fi
+runner_authorized_keys_stat="$(stat -c '%a %U %G' {{ robokitty_runner_ssh_authorized_keys_file }})"
+[ "$runner_authorized_keys_stat" = "644 root root" ] || \
+  fail "runner SSH authorized keys ownership or mode is unsafe: $runner_authorized_keys_stat"
+runner_sshd_effective="$(/usr/sbin/sshd -T -C user={{ robokitty_runner_user }},host={{ robokitty_hostname }},addr=127.0.0.1)"
+grep -Fxq \
+  'authorizedkeysfile {{ robokitty_runner_ssh_authorized_keys_file }}' \
+  <<<"$runner_sshd_effective" || \
+  fail "SSHD does not force runner SSH keys through the root-owned authorized keys file"
+if sudo -n -u {{ robokitty_runner_user }} test -w {{ robokitty_runner_ssh_authorized_keys_file }}; then
+  fail "runner can write its SSH authorized keys file"
+fi
+if sudo -n -u {{ robokitty_runner_user }} test -e /home/{{ robokitty_runner_user }}/.ssh/authorized_keys; then
+  fail "runner-owned SSH authorized_keys file still exists"
+fi
+ok "runner SSH access uses root-owned authorized keys"
 [ ! -e {{ robokitty_config_dir }}/repos.json ] || \
   fail "legacy repo routing config remains under denied etc path"
 if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \

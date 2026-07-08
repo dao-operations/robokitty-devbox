@@ -13,6 +13,7 @@ robokitty_allowed_ssh_cidrs: []
 robokitty_sshd_listen_addresses:
   - 127.0.0.1
 robokitty_enable_proc_hardening: true
+robokitty_runner_ssh_authorized_keys: "{{ vault_robokitty_runner_ssh_authorized_keys | default([]) }}"
 
 # Until pinned installer checksums are documented, production bootstrap requires
 # explicit inventory-level acceptance for upstream installer scripts.

@@ -5,6 +5,9 @@ robokitty_bridge_user: agent-bridge
 robokitty_runner_user: agent
 robokitty_git_user: agent-git
 robokitty_work_group: agent-work
+robokitty_runner_ssh_authorized_keys: []
+robokitty_runner_ssh_authorized_keys_dir: /etc/ssh/authorized_keys.d
+robokitty_runner_ssh_authorized_keys_file: "{{ robokitty_runner_ssh_authorized_keys_dir }}/{{ robokitty_runner_user }}"
 
 robokitty_root: /srv/robokitty-devbox
 robokitty_workdir: /srv/robokitty-devbox/work

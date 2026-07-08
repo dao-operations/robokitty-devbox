@@ -14,6 +14,8 @@ vault_robokitty_takopi_bot_token: "VAULT_ME"
 vault_robokitty_takopi_chat_id: 123456789
 vault_robokitty_takopi_allowed_user_ids:
   - 123456789
+vault_robokitty_runner_ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIVAULTME codex-app-to-robokitty-agent
 
 vault_robokitty_github_token: "github_pat_VAULT_ME"
 # Optional fail-closed assertion. Leave empty to derive the contribution owner

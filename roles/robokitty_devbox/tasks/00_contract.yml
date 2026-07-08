@@ -159,6 +159,10 @@
       - robokitty_state_dir == '/var/lib/robokitty-devbox'
       - robokitty_repo_config_file == robokitty_state_dir ~ '/repos.json'
       - robokitty_worktree_source_dir == robokitty_state_dir ~ '/worktree-sources'
+      - robokitty_runner_ssh_authorized_keys_dir == '/etc/ssh/authorized_keys.d'
+      - >-
+        robokitty_runner_ssh_authorized_keys_file ==
+        robokitty_runner_ssh_authorized_keys_dir ~ '/' ~ robokitty_runner_user
       - robokitty_bindir is match('^/[A-Za-z0-9._+/-]+$')
       - "'..' not in robokitty_bindir.split('/')"
       - robokitty_workdir is search('^' ~ robokitty_root ~ '/')
@@ -179,6 +183,19 @@
         (robokitty_codex_binary is search('^/home/' ~ robokitty_runner_user ~ '/\\.local/bin/')) or
         (robokitty_codex_binary is search('^/usr/local/bin/'))
     fail_msg: "Local user/group names and the Codex binary path must be safe for sudoers and shell rendering."
+
+- name: "CONTRACT | Assert runner SSH public keys are safe"
+  ansible.builtin.assert:
+    that:
+      - >-
+        item is match(
+          '^(ssh-ed25519|ecdsa-sha2-nistp256|' ~
+          'sk-ssh-ed25519@openssh.com|' ~
+          'sk-ecdsa-sha2-nistp256@openssh.com|ssh-rsa) ' ~
+          '[A-Za-z0-9+/=]+( [^\r\n]+)?$'
+        )
+    fail_msg: "Runner SSH authorized keys must be complete OpenSSH public keys."
+  loop: "{{ robokitty_runner_ssh_authorized_keys }}"
 
 - name: "CONTRACT | Assert Codex permission policy"
   ansible.builtin.assert:

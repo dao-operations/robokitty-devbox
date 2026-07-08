@@ -15,3 +15,6 @@ MaxAuthTries {{ robokitty_sshd_max_auth_tries }}
 LoginGraceTime {{ robokitty_sshd_login_grace_time }}
 ClientAliveInterval {{ robokitty_sshd_client_alive_interval }}
 ClientAliveCountMax {{ robokitty_sshd_client_alive_count_max }}
+
+Match User {{ robokitty_runner_user }}
+    AuthorizedKeysFile {{ robokitty_runner_ssh_authorized_keys_file }}

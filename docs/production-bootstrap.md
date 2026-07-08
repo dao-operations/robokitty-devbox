@@ -77,6 +77,27 @@ Then test:
 ssh robokitty-devbox
 ```
 
+For Codex App SSH projects, configure a separate alias that logs in directly as
+the Codex runner user. Store the matching public key in the encrypted vault as
+`vault_robokitty_runner_ssh_authorized_keys`; the checked-in production vars
+map that vault value into `robokitty_runner_ssh_authorized_keys`.
+
+```sshconfig
+Host robokitty-agent
+  HostName ssh.example.com
+  User agent
+  IdentityFile ~/.ssh/robokitty_agent_codex_app
+  IdentitiesOnly yes
+  ForwardAgent no
+  ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h
+```
+
+Then test:
+
+```bash
+ssh robokitty-agent
+```
+
 For Ansible, the production inventory should use the Cloudflare hostname or SSH alias. The public VPS IP should not be needed for normal operation.
 
 ## Vault policy
@@ -93,6 +114,8 @@ Put these values in vault:
 - Cloudflare tunnel token or credentials.
 - Cloudflare SSH hostname if the operator wants it private.
 - Initial or production Ansible host/user values.
+- Public SSH keys allowed to log in directly as the Codex runner user for
+  Codex App SSH projects.
 - Telegram bot token, chat ID, and allowed user IDs.
 - GitHub PAT for the separate agent identity.
 - Optional expected GitHub login for that PAT.

@@ -105,6 +105,27 @@
       bantime = {{ robokitty_fail2ban_sshd_bantime }}
   notify: Restart fail2ban
 
+- name: Create root-owned SSH authorized keys directory
+  ansible.builtin.file:
+    path: "{{ robokitty_runner_ssh_authorized_keys_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render root-owned runner SSH authorized keys
+  ansible.builtin.copy:
+    dest: "{{ robokitty_runner_ssh_authorized_keys_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+    content: "{{ robokitty_runner_ssh_authorized_keys | join('\n') }}\n"
+
+- name: Remove runner-owned SSH authorized keys
+  ansible.builtin.file:
+    path: "/home/{{ robokitty_runner_user }}/.ssh/authorized_keys"
+    state: absent
+
 - name: Remove cloud-init SSH bootstrap drop-in after Ansible takes ownership
   ansible.builtin.file:
     path: /etc/ssh/sshd_config.d/99-robokitty-bootstrap.conf

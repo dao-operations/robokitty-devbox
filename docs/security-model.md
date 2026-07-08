@@ -53,6 +53,12 @@ Codex at the configured project path, and disabling upward project-root
 discovery prevents Codex from treating `/srv/robokitty-devbox` as a parent
 project when a stray or historical marker exists there.
 
+For Codex App SSH access, the runner user's accepted SSH public keys are
+rendered from inventory into a root-owned file under
+`/etc/ssh/authorized_keys.d`. The SSH daemon's runner-specific
+`AuthorizedKeysFile` setting points at that file, so `agent` cannot grant
+itself persistent direct-login keys by editing `/home/agent/.ssh/authorized_keys`.
+
 The repo routing config at `/var/lib/robokitty-devbox/repos.json` is non-secret
 and is explicitly readable by sandboxed Codex commands. Files under
 `/etc/robokitty-devbox` remain denied unless explicitly allowed; the playbook

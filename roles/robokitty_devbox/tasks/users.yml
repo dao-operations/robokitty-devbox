@@ -41,6 +41,44 @@
     group: "{{ robokitty_git_user }}"
     mode: "0700"
 
+- name: Create Actions runner user
+  ansible.builtin.user:
+    name: "{{ robokitty_actions_runner_user }}"
+    shell: /bin/bash
+    create_home: true
+    home: "{{ robokitty_actions_runner_home }}"
+    groups: ""
+    append: false
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Harden Actions runner home directory
+  ansible.builtin.file:
+    path: "{{ robokitty_actions_runner_home }}"
+    state: directory
+    owner: "{{ robokitty_actions_runner_user }}"
+    group: "{{ robokitty_actions_runner_user }}"
+    mode: "0700"
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Create deploy secret user
+  ansible.builtin.user:
+    name: "{{ robokitty_deploy_runner_user }}"
+    shell: /bin/bash
+    create_home: true
+    home: "{{ robokitty_deploy_runner_home }}"
+    groups: ""
+    append: false
+  when: robokitty_deploy_runner_enabled | bool
+
+- name: Harden deploy runner home directory
+  ansible.builtin.file:
+    path: "{{ robokitty_deploy_runner_home }}"
+    state: directory
+    owner: "{{ robokitty_deploy_runner_user }}"
+    group: "{{ robokitty_deploy_runner_user }}"
+    mode: "0700"
+  when: robokitty_deploy_runner_enabled | bool
+
 - name: Create root directories
   ansible.builtin.file:
     path: "{{ item.path }}"

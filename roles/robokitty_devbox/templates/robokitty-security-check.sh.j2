@@ -68,6 +68,58 @@ github_signing_public_key_stat="$(stat -c '%a %U %G' "$github_signing_public_key
 ok "Git signing key files are broker-owned"
 {% endif %}
 
+{% if robokitty_deploy_runner_enabled | bool %}
+deploy_vault_file="{{ robokitty_deploy_runner_vault_password_file }}"
+
+echo "[5d] runner cannot read deploy vault password"
+if sudo -n -u {{ robokitty_runner_user }} test -r "$deploy_vault_file"; then
+  fail "runner can read deploy vault password"
+else
+  ok "runner cannot read deploy vault password"
+fi
+
+echo "[5e] Actions runner cannot read deploy vault password"
+if sudo -n -u {{ robokitty_actions_runner_user }} test -r "$deploy_vault_file"; then
+  fail "Actions runner can read deploy vault password"
+else
+  ok "Actions runner cannot read deploy vault password"
+fi
+
+echo "[5f] deploy vault password file is deploy-owned only"
+deploy_vault_stat="$(stat -c '%a %U %G' "$deploy_vault_file")"
+[ "$deploy_vault_stat" = "400 {{ robokitty_deploy_runner_user }} {{ robokitty_deploy_runner_user }}" ] || \
+  fail "deploy vault password ownership or mode is unsafe: $deploy_vault_stat"
+[ ! -L "$deploy_vault_file" ] || fail "deploy vault password file must not be a symlink"
+ok "deploy vault password file is owned by {{ robokitty_deploy_runner_user }} with mode 0400"
+
+echo "[5g] Codex has no deploy sudo path"
+if sudo -n -l -U {{ robokitty_runner_user }} 2>/dev/null | grep -Fq {{ robokitty_deploy_runner_wrapper | quote }}; then
+  fail "Codex runner can invoke deploy wrapper through sudo"
+else
+  ok "Codex runner cannot invoke deploy wrapper through sudo"
+fi
+
+echo "[5h] Actions sudo path is fixed deploy wrapper only"
+grep -Fq '{{ robokitty_actions_runner_user }} ALL=(root) NOPASSWD: {{ robokitty_deploy_runner_wrapper }} ""' \
+  /etc/sudoers.d/robokitty-devbox || \
+  fail "Actions runner sudoers entry is missing or not argument-constrained"
+actions_sudo="$(sudo -n -l -U {{ robokitty_actions_runner_user }} 2>/dev/null || true)"
+actions_nopasswd="$(grep -E '^[[:space:]]*[(].*[)][[:space:]]+NOPASSWD:' <<<"$actions_sudo" || true)"
+actions_nopasswd_count="$(grep -Ec 'NOPASSWD:' <<<"$actions_nopasswd" || true)"
+[ "$actions_nopasswd_count" = "1" ] || \
+  fail "Actions runner has unexpected sudo capabilities: $actions_nopasswd"
+grep -Fq '(root) NOPASSWD: {{ robokitty_deploy_runner_wrapper }} ""' <<<"$actions_nopasswd" || \
+  fail "Actions runner sudo capability is not the fixed deploy wrapper"
+ok "Actions runner sudo path is constrained to deploy wrapper"
+
+echo "[5i] Actions runner cannot write deploy checkout parent"
+if sudo -n -u {{ robokitty_actions_runner_user }} test -w {{ (robokitty_deploy_runner_checkout_dir | dirname) | quote }}; then
+  fail "Actions runner can write deploy checkout parent"
+else
+  ok "Actions runner cannot write deploy checkout parent"
+fi
+{% endif %}
+
 echo "[6] GitHub broker exposes no denied P0 surfaces"
 if grep -Eq "sub\\.add_parser\\('(merge|api|workflow|secret|admin)'" {{ robokitty_libdir }}/githubctl.py; then
   fail "githubctl exposes a denied subcommand"
@@ -282,6 +334,18 @@ if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
   /home/{{ robokitty_runner_user }}/.codex/config.toml; then
   fail "Codex config does not allow the githubctl broker Unix socket"
 fi
+{% if robokitty_deploy_runner_enabled | bool %}
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"/home/{{ robokitty_actions_runner_user }}" = "deny"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not deny Actions runner home"
+fi
+if ! sudo -n -u {{ robokitty_runner_user }} grep -Eq \
+  '^"/home/{{ robokitty_deploy_runner_user }}" = "deny"$' \
+  /home/{{ robokitty_runner_user }}/.codex/config.toml; then
+  fail "Codex config does not deny deploy runner home"
+fi
+{% endif %}
 legacy_rules_file="{{ robokitty_codex_requirements_dir }}/rules/robokitty-githubctl.rules"
 [ ! -e "$legacy_rules_file" ] || fail "legacy githubctl Codex exec rule must be removed"
 [ -r {{ robokitty_codex_requirements_file }} ] || fail "Codex requirements file is missing"

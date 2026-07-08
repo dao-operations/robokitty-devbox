@@ -38,6 +38,15 @@ robokitty_git_user_email: "{{ vault_robokitty_git_user_email }}"
 robokitty_git_signing_private_key_pem: "{{ vault_robokitty_git_signing_private_key_pem }}"
 robokitty_git_signing_public_key: "{{ vault_robokitty_git_signing_public_key }}"
 
+robokitty_deploy_runner_enabled: "{{ vault_robokitty_deploy_runner_enabled | default(false) }}"
+robokitty_actions_runner_github_url: https://github.com/dao-operations/robokitty-devbox
+robokitty_deploy_runner_github_url: https://github.com/dao-operations/robokitty-devbox
+robokitty_actions_runner_package_url: "{{ vault_robokitty_actions_runner_package_url | default('') }}"
+robokitty_actions_runner_package_checksum: "{{ vault_robokitty_actions_runner_package_checksum | default('') }}"
+robokitty_actions_runner_registration_token: "{{ vault_robokitty_actions_runner_registration_token | default('') }}"
+robokitty_deploy_runner_secret_custody_ack: "{{ vault_robokitty_deploy_runner_secret_custody_ack | default('') }}"
+robokitty_deploy_runner_vault_password: "{{ vault_robokitty_deploy_runner_vault_password | default('') }}"
+
 robokitty_repos:
   - alias: governance-apps
     owner: yearn

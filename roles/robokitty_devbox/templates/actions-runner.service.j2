@@ -1,0 +1,38 @@
+[Unit]
+Description=Robokitty GitHub Actions self-hosted runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ robokitty_actions_runner_user }}
+Group={{ robokitty_actions_runner_user }}
+WorkingDirectory={{ robokitty_actions_runner_dir }}
+Environment=HOME={{ robokitty_actions_runner_home }}
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/home/{{ robokitty_actions_runner_user }}/.local/bin
+ExecStart={{ robokitty_actions_runner_dir }}/run.sh
+KillSignal=SIGINT
+TimeoutStopSec=300
+Restart=always
+RestartSec=10
+
+# Workflow jobs intentionally cross a narrow sudo boundary to the deploy
+# wrapper. Systemd no-new-privileges or read-only filesystem namespaces would
+# block that deployment path.
+NoNewPrivileges=false
+PrivateTmp=false
+ProtectHome=false
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+{% if robokitty_enable_proc_hardening | bool %}
+ProtectProc=invisible
+{% endif %}
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

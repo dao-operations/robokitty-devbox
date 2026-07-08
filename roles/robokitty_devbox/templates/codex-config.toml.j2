@@ -21,6 +21,10 @@ extends = ":workspace"
 glob_scan_max_depth = {{ robokitty_codex_glob_scan_max_depth | int }}
 "/home/{{ robokitty_bridge_user }}" = "deny"
 "/home/{{ robokitty_git_user }}" = "deny"
+{% if robokitty_deploy_runner_enabled | bool %}
+"/home/{{ robokitty_actions_runner_user }}" = "deny"
+"/home/{{ robokitty_deploy_runner_user }}" = "deny"
+{% endif %}
 "/root" = "deny"
 "{{ robokitty_config_dir }}" = "deny"
 "{{ robokitty_repo_config_file }}" = "read"

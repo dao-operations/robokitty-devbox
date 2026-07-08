@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+[ "$#" -eq 0 ] || fail "robokitty-deploy-infra accepts no arguments"
+[ "$(id -u)" -eq 0 ] || fail "robokitty-deploy-infra must run as root through sudo"
+
+actions_user={{ robokitty_actions_runner_user | quote }}
+deploy_user={{ robokitty_deploy_runner_user | quote }}
+deploy_home={{ robokitty_deploy_runner_home | quote }}
+github_url={{ robokitty_deploy_runner_github_url | quote }}
+branch={{ robokitty_deploy_runner_branch | quote }}
+checkout={{ robokitty_deploy_runner_checkout_dir | quote }}
+vault_file={{ robokitty_deploy_runner_vault_password_file | quote }}
+log_dir={{ robokitty_deploy_runner_log_dir | quote }}
+ansible_home={{ robokitty_deploy_runner_ansible_home | quote }}
+inventory_rel={{ robokitty_deploy_runner_inventory | quote }}
+playbook_rel={{ robokitty_deploy_runner_playbook | quote }}
+lock_file=/run/robokitty-devbox/deploy-infra.lock
+
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "$actions_user" ]; then
+  fail "only $actions_user may invoke this wrapper through sudo"
+fi
+
+umask 077
+mkdir -p /run/robokitty-devbox "$log_dir" "$ansible_home/tmp/local" "$ansible_home/tmp/remote" "$ansible_home/collections"
+
+exec 9>"$lock_file"
+flock -n 9 || fail "another deploy is already running"
+
+log_file="$log_dir/deploy-$(date -u +%Y%m%dT%H%M%SZ).log"
+install -m 0600 -o root -g root /dev/null "$log_file"
+exec > >(tee -a "$log_file") 2>&1
+
+echo "== robokitty infra deploy =="
+echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "repository=$github_url"
+echo "branch=$branch"
+
+[ -f "$vault_file" ] || fail "vault password file is missing"
+[ ! -L "$vault_file" ] || fail "vault password file must not be a symlink"
+vault_stat="$(stat -c '%a %U %G' "$vault_file")"
+[ "$vault_stat" = "400 {{ robokitty_deploy_runner_user }} {{ robokitty_deploy_runner_user }}" ] || \
+  fail "vault password file ownership or mode is unsafe: $vault_stat"
+
+as_deploy() {
+  runuser -u "$deploy_user" -- env \
+    HOME="$deploy_home" \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin:/home/{{ robokitty_deploy_runner_user }}/.local/bin \
+    "$@"
+}
+
+checkout_parent="$(dirname "$checkout")"
+[ -d "$checkout_parent" ] || fail "checkout parent is missing"
+[ ! -L "$checkout_parent" ] || fail "checkout parent must not be a symlink"
+
+if [ -e "$checkout" ] && [ ! -d "$checkout/.git" ]; then
+  fail "checkout path exists but is not a Git checkout: $checkout"
+fi
+[ ! -L "$checkout" ] || fail "checkout path must not be a symlink"
+
+if [ ! -d "$checkout/.git" ]; then
+  tmp_checkout="$checkout.tmp.$$"
+  trap 'rm -rf "$tmp_checkout"' EXIT
+  as_deploy git clone --branch "$branch" --single-branch "$github_url" "$tmp_checkout"
+  as_deploy mv "$tmp_checkout" "$checkout"
+  trap - EXIT
+fi
+
+as_deploy git -C "$checkout" remote set-url origin "$github_url"
+as_deploy git -C "$checkout" fetch --prune origin "$branch"
+as_deploy git -C "$checkout" checkout --detach "origin/$branch"
+as_deploy git -C "$checkout" reset --hard "origin/$branch"
+as_deploy git -C "$checkout" clean -ffdx
+
+head="$(as_deploy git -C "$checkout" rev-parse HEAD)"
+remote_head="$(as_deploy git -C "$checkout" rev-parse "origin/$branch")"
+[ "$head" = "$remote_head" ] || fail "checkout HEAD does not match origin/$branch"
+
+status="$(as_deploy git -C "$checkout" status --porcelain)"
+[ -z "$status" ] || fail "checkout is dirty after reset"
+
+empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
+as_deploy git -C "$checkout" diff --check "$empty_tree" HEAD
+
+inventory="$checkout/$inventory_rel"
+playbook="$checkout/$playbook_rel"
+[ -f "$inventory" ] || fail "inventory is missing: $inventory_rel"
+[ -f "$playbook" ] || fail "playbook is missing: $playbook_rel"
+
+ansible_env=(
+  ANSIBLE_HOME="$ansible_home"
+  ANSIBLE_LOCAL_TEMP="$ansible_home/tmp/local"
+  ANSIBLE_REMOTE_TEMP="$ansible_home/tmp/remote"
+  ANSIBLE_COLLECTIONS_PATH="$ansible_home/collections"
+  ANSIBLE_STDOUT_CALLBACK=default
+)
+
+if [ -f "$checkout/requirements.yml" ]; then
+  env "${ansible_env[@]}" ansible-galaxy collection install \
+    --force \
+    -r "$checkout/requirements.yml" \
+    -p "$ansible_home/collections"
+fi
+
+env "${ansible_env[@]}" ansible-playbook \
+  -i "$inventory" \
+  "$playbook" \
+  --syntax-check \
+  --vault-password-file "$vault_file"
+
+env "${ansible_env[@]}" ansible-playbook \
+  -i "$inventory" \
+  "$playbook" \
+  --connection=local \
+  --vault-password-file "$vault_file" \
+  --extra-vars ansible_connection=local \
+  --extra-vars ansible_host=127.0.0.1 \
+  --extra-vars ansible_user=root \
+  --extra-vars ansible_ssh_common_args=
+
+echo "deploy complete: $head"
